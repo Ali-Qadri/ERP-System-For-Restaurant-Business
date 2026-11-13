@@ -22,10 +22,52 @@
         <form id="login-form" class="login-form">
           <label class="form-field"><span>Email address</span><input name="email" type="email" autocomplete="email" placeholder="you@restaurant.com" required></label>
           <label class="form-field"><span>Password</span><input name="password" type="password" autocomplete="current-password" placeholder="Enter your password" required></label>
+          <div class="login-actions"><button class="login-link" type="button" data-auth-view="forgot">Forgot Password?</button></div>
           <div id="login-error" class="login-error" role="alert" hidden></div>
           <button class="button button-primary login-submit" type="submit">Sign in</button>
         </form>
         <p class="login-note">Access is managed securely through Supabase Auth.</p>
+      </div>
+    </section>
+
+    <section id="forgot-password-screen" class="login-screen" aria-labelledby="forgot-password-title" hidden>
+      <div class="login-card">
+        <div class="login-brand">
+          <span class="brand-mark">J</span>
+          <span class="brand-copy"><strong>juniper</strong><small>TABLE &amp; KITCHEN</small></span>
+        </div>
+        <div class="login-heading">
+          <span class="eyebrow">ACCOUNT RECOVERY</span>
+          <h1 id="forgot-password-title">Reset your password</h1>
+          <p>Enter your registered email and we’ll send you a secure recovery link.</p>
+        </div>
+        <form id="forgot-password-form" class="login-form">
+          <label class="form-field"><span>Email address</span><input name="email" type="email" autocomplete="email" placeholder="you@restaurant.com" required></label>
+          <div id="forgot-password-message" class="login-message" role="status" aria-live="polite" hidden></div>
+          <button class="button button-primary login-submit" type="submit">Send recovery link</button>
+          <button class="login-link login-back-link" type="button" data-auth-view="login">Back to sign in</button>
+        </form>
+      </div>
+    </section>
+
+    <section id="reset-password-screen" class="login-screen" aria-labelledby="reset-password-title" hidden>
+      <div class="login-card">
+        <div class="login-brand">
+          <span class="brand-mark">J</span>
+          <span class="brand-copy"><strong>juniper</strong><small>TABLE &amp; KITCHEN</small></span>
+        </div>
+        <div class="login-heading">
+          <span class="eyebrow">ACCOUNT RECOVERY</span>
+          <h1 id="reset-password-title">Choose a new password</h1>
+          <p>Use at least 8 characters to secure your account.</p>
+        </div>
+        <form id="reset-password-form" class="login-form">
+          <label class="form-field"><span>New password</span><input name="password" type="password" autocomplete="new-password" placeholder="Enter a new password" required minlength="8"></label>
+          <label class="form-field"><span>Confirm new password</span><input name="confirmPassword" type="password" autocomplete="new-password" placeholder="Repeat your new password" required minlength="8"></label>
+          <div id="reset-password-message" class="login-message" role="alert" aria-live="polite" hidden></div>
+          <button class="button button-primary login-submit" type="submit">Update password</button>
+          <button class="login-link login-back-link" type="button" data-auth-view="login">Back to sign in</button>
+        </form>
       </div>
     </section>
 
