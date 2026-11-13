@@ -8,7 +8,30 @@
     <link rel="stylesheet" href="styles.css">
   </head>
   <body>
-    <div class="app-shell">
+    <section id="login-screen" class="login-screen" aria-labelledby="login-title">
+      <div class="login-card">
+        <div class="login-brand">
+          <span class="brand-mark">J</span>
+          <span class="brand-copy"><strong>juniper</strong><small>TABLE &amp; KITCHEN</small></span>
+        </div>
+        <div class="login-heading">
+          <span class="eyebrow">RESTAURANT OPERATIONS</span>
+          <h1 id="login-title">Welcome back</h1>
+          <p>Sign in to continue to your restaurant workspace.</p>
+        </div>
+        <form id="login-form" class="login-form">
+          <label class="form-field"><span>Email address</span><input name="email" type="email" autocomplete="email" placeholder="you@restaurant.com" required></label>
+          <label class="form-field"><span>Password</span><input name="password" type="password" autocomplete="current-password" placeholder="Enter your password" required></label>
+          <div id="login-error" class="login-error" role="alert" hidden></div>
+          <button class="button button-primary login-submit" type="submit">Sign in</button>
+        </form>
+        <p class="login-note">Access is managed securely through Supabase Auth.</p>
+      </div>
+    </section>
+
+    <div id="super-admin-root" hidden></div>
+
+    <div class="app-shell" hidden>
       <aside class="sidebar">
         <a class="brand" href="#" aria-label="Juniper Table home" data-view="overview">
           <span class="brand-mark">J</span>
@@ -43,6 +66,7 @@
             <span class="profile-more">···</span>
           </button>
         </div>
+        <button class="logout-link" data-action="logout" type="button">Sign out</button>
       </aside>
 
       <main class="main-area">
@@ -59,6 +83,6 @@
     </div>
     <div id="modal-root"></div>
     <div id="toast" class="toast" role="status" aria-live="polite"></div>
-    <script type="module" src="app.js"></script>
+    <script type="module" src="src/login.js"></script>
   </body>
 </html>

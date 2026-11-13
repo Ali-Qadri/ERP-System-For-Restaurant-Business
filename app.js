@@ -3,12 +3,15 @@ import { supabase, isSupabaseConfigured } from "./src/lib/supabaseClient.js";
 import { clone, money, escapeHtml as esc, initials, timeNow } from "./src/lib/formatters.js";
 import { createLocalStorage } from "./src/lib/localStorage.js";
 
-(() => {
+export async function startDashboard({ user, profile, membership, role } = {}) {
   const STORAGE_KEY = "juniper-table-erp-v1";
   const app = document.getElementById("app");
   const modalRoot = document.getElementById("modal-root");
   const toast = document.getElementById("toast");
   const backend = isSupabaseConfigured ? supabase : null;
+  const authProfile = profile || {};
+  const authMembership = membership || {};
+  const authRole = role || "staff_shared";
   const safeImage = (image) => /^(assets\/food\/[a-z0-9-]+\.jpg|https:\/\/images\.unsplash\.com\/|data:image\/(?:jpeg|png|webp);base64,)/i.test(String(image || "")) ? image : "";
   const dayNames = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"];
   let state;
@@ -41,7 +44,18 @@ import { createLocalStorage } from "./src/lib/localStorage.js";
     toastTimer = setTimeout(() => toast.classList.remove("visible"), 2800);
   }
 
-  const storage = createLocalStorage({ storageKey: STORAGE_KEY, seed, clone, onError: showToast });
+  function applyIdentity() {
+    const fallbackName = user?.email?.split("@")[0] || "Restaurant user";
+    const displayName = authProfile.full_name || authProfile.name || user?.user_metadata?.full_name || fallbackName;
+    const displayRole = authRole.replace("_", " ");
+    document.querySelector(".profile-button .profile-avatar").textContent = initials(displayName);
+    document.querySelector(".profile-button strong").textContent = displayName;
+    document.querySelector(".profile-button small").textContent = displayRole;
+    const restaurantName = authMembership.restaurant_name || authMembership.restaurant?.name;
+    if (restaurantName) document.querySelector(".restaurant-name strong").textContent = restaurantName;
+  }
+
+  const storage = createLocalStorage({ storageKey: STORAGE_KEY, seed, clone, onError: showToast, supabase: backend });
   const saveState = () => storage.save(state);
   const loadState = () => { state = storage.load(); };
 
@@ -1213,10 +1227,20 @@ import { createLocalStorage } from "./src/lib/localStorage.js";
     }
   });
 
+  applyIdentity();
   loadState();
+  if (backend) {
+    try {
+      const remoteState = await storage.loadRemote();
+      if (remoteState) state = remoteState;
+    } catch (error) {
+      console.error("Could not load restaurant data from Supabase.", error);
+      showToast("Supabase is configured, but the restaurant_state table is not ready yet.");
+    }
+  }
   ensureEmployeeData();
   baselineCompletedSales = seed.orders.filter((order) => order.status === "Completed").reduce((sum, order) => sum + Number(order.total), 0);
   render();
   updateLiveClock();
   window.setInterval(updateLiveClock, 1000);
-})();
+}
