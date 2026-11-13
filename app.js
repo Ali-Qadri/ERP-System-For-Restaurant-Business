@@ -1,17 +1,17 @@
+import seed from "./mockData.js";
+import { supabase, isSupabaseConfigured } from "./src/lib/supabaseClient.js";
+import { clone, money, escapeHtml as esc, initials, timeNow } from "./src/lib/formatters.js";
+import { createLocalStorage } from "./src/lib/localStorage.js";
+
 (() => {
   const STORAGE_KEY = "juniper-table-erp-v1";
   const app = document.getElementById("app");
   const modalRoot = document.getElementById("modal-root");
   const toast = document.getElementById("toast");
-  const seed = window.RestaurantData;
-  const clone = (value) => JSON.parse(JSON.stringify(value));
-  const money = (value) => new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 2 }).format(Number(value) || 0);
-  const esc = (value) => String(value ?? "").replace(/[&<>"']/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[char]));
-  const initials = (name) => String(name || "").split(/\s+/).slice(0, 2).map((part) => part.charAt(0)).join("").toUpperCase();
-  const timeNow = () => new Intl.DateTimeFormat("en-US", { hour: "numeric", minute: "2-digit" }).format(new Date());
+  const backend = isSupabaseConfigured ? supabase : null;
   const safeImage = (image) => /^(assets\/food\/[a-z0-9-]+\.jpg|https:\/\/images\.unsplash\.com\/|data:image\/(?:jpeg|png|webp);base64,)/i.test(String(image || "")) ? image : "";
   const dayNames = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"];
-  let state = clone(seed);
+  let state;
   let view = "overview";
   let orderFilter = "All orders";
   let menuFilter = "All";
@@ -32,6 +32,8 @@
   let toastTimer;
   let baselineCompletedSales = 0;
 
+  if (backend) console.info("Supabase client configured; demo state remains local until persistence is connected.");
+
   function showToast(message) {
     toast.textContent = message;
     toast.classList.add("visible");
@@ -39,51 +41,9 @@
     toastTimer = setTimeout(() => toast.classList.remove("visible"), 2800);
   }
 
-  function saveState() {
-    try {
-      state.schemaVersion = 3;
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
-    } catch (error) {
-      console.error("Could not save restaurant data.", error);
-      showToast("Changes could not be saved in this browser. Export a backup to keep your data.");
-    }
-  }
-
-  function loadState() {
-    try {
-      const saved = localStorage.getItem(STORAGE_KEY);
-      if (!saved) return;
-      const parsed = JSON.parse(saved);
-      const collections = ["menu", "inventory", "team", "reservations", "orders"];
-      if (!parsed || collections.some((key) => !Array.isArray(parsed[key]))) {
-        throw new Error("Saved restaurant data is incomplete.");
-      }
-      state = {
-        ...clone(seed),
-        ...parsed,
-        menu: parsed.menu.map((item) => {
-          const original = seed.menu.find((entry) => Number(entry.id) === Number(item.id));
-          return { ...original, ...item, image: item.image || original?.image || "" };
-        }),
-        team: [...parsed.team.map((person) => {
-          const original = seed.team.find((entry) => Number(entry.id) === Number(person.id));
-          return { ...original, ...person, role: person.role === "Server" && original?.role === "Waiter" ? "Waiter" : person.role };
-        }), ...(Number(parsed.schemaVersion || 0) < 3 ? seed.team.filter((person) => !parsed.team.some((saved) => Number(saved.id) === Number(person.id))) : [])],
-        orders: parsed.orders.map((order) => ({ ...seed.orders.find((entry) => Number(entry.id) === Number(order.id)), ...order })),
-        notifications: Array.isArray(parsed.notifications) ? parsed.notifications : [],
-        seenReservationIds: Array.isArray(parsed.seenReservationIds) ? parsed.seenReservationIds : [],
-        timeEntries: Array.isArray(parsed.timeEntries) ? parsed.timeEntries : [],
-        leaveRequests: Array.isArray(parsed.leaveRequests) && parsed.leaveRequests.length ? parsed.leaveRequests : clone(seed.leaveRequests || []),
-        replacementRequests: Array.isArray(parsed.replacementRequests) && parsed.replacementRequests.length ? parsed.replacementRequests : clone(seed.replacementRequests || []),
-        expenses: Array.isArray(parsed.expenses) && parsed.expenses.length ? parsed.expenses : clone(seed.expenses || []),
-        complaints: Array.isArray(parsed.complaints) && parsed.complaints.length ? parsed.complaints : clone(seed.complaints || []),
-        wagePayments: Array.isArray(parsed.wagePayments) && parsed.wagePayments.length ? parsed.wagePayments : clone(seed.wagePayments || [])
-      };
-    } catch (error) {
-      console.error("Could not load saved restaurant data.", error);
-      showToast("Saved data could not be read. Showing the demo data instead.");
-    }
-  }
+  const storage = createLocalStorage({ storageKey: STORAGE_KEY, seed, clone, onError: showToast });
+  const saveState = () => storage.save(state);
+  const loadState = () => { state = storage.load(); };
 
   function lowStockItems() {
     return state.inventory.filter((item) => item.stock <= item.reorderAt);

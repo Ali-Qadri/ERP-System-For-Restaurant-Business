@@ -4,7 +4,7 @@ const mockDate = (offsetDays) => {
   return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
 };
 
-window.RestaurantData = {
+const restaurantData = {
   restaurant: { name: "Juniper Table", location: "Downtown", currency: "USD" },
   menu: [
     { id: 1, name: "Wild mushroom risotto", category: "Mains", description: "Arborio rice, wild mushrooms, parmesan", price: 24, popular: true, image: "assets/food/wild-mushroom-risotto.jpg", recipe: [{ ingredientId: 1, quantity: 0.18 }, { ingredientId: 2, quantity: 0.12 }, { ingredientId: 3, quantity: 0.04 }] },
@@ -85,3 +85,5 @@ window.RestaurantData = {
   sales: [1820, 2140, 1760, 2480, 2260, 2910, 2640],
   salesLabels: ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
 };
+
+export default restaurantData;
