@@ -264,6 +264,7 @@ serve(async (request) => {
   if (userError || !userData.user) return json({ error: "Your session is invalid or expired." }, 401);
   console.info("ERP Assistant JWT verified.");
 
+  console.info("ERP Assistant membership lookup started.");
   const { data: membership, error: membershipError } = await userClient
     .from("restaurant_members")
     .select("restaurant_id, role")
@@ -271,6 +272,14 @@ serve(async (request) => {
     .eq("status", "active")
     .limit(1)
     .maybeSingle();
+  console.info("ERP Assistant membership lookup completed.", {
+    dataExists: Boolean(membership),
+    errorExists: Boolean(membershipError),
+    errorCode: membershipError?.code,
+    errorMessage: membershipError?.message,
+    errorDetails: membershipError?.details,
+    errorHint: membershipError?.hint
+  });
   if (membershipError) return json({ error: "Your restaurant membership could not be verified." }, 500);
   if (!membership || !allowedRoles.has(membership.role)) return json({ error: "You do not have an active restaurant role for the assistant." }, 403);
   console.info("ERP Assistant restaurant membership verified.");
