@@ -6,6 +6,8 @@ const maxMessages = 20;
 const maxMessageLength = 4000;
 const maxConversationLength = 24000;
 const corsOrigin = Deno.env.get("APP_URL")?.trim() || "*";
+let cachedModelName = "";
+let cachedModelExpiresAt = 0;
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": corsOrigin,
@@ -23,6 +25,57 @@ function json(body: Record<string, unknown>, status = 200) {
 
 function errorMessage(error: unknown) {
   return error instanceof Error ? error.message : "Unexpected server error.";
+}
+
+function sanitizeGoogleError(payload: unknown) {
+  if (!payload || typeof payload !== "object") return { message: String(payload || "No error body returned.").slice(0, 2000) };
+  const source = payload as { error?: { code?: unknown; status?: unknown; message?: unknown; details?: unknown }; message?: unknown };
+  return {
+    code: source.error?.code,
+    status: source.error?.status,
+    message: String(source.error?.message || source.message || "No error message returned.").slice(0, 2000),
+    details: Array.isArray(source.error?.details) ? source.error.details.slice(0, 5) : undefined
+  };
+}
+
+async function readGoogleResponse(response: Response) {
+  const body = await response.text();
+  try {
+    return body ? JSON.parse(body) : {};
+  } catch {
+    return { message: body.slice(0, 2000) };
+  }
+}
+
+async function discoverGenerateContentModel(apiKey: string) {
+  if (cachedModelName && cachedModelExpiresAt > Date.now()) return cachedModelName;
+
+  const response = await fetch("https://generativelanguage.googleapis.com/v1beta/models", {
+    headers: { "x-goog-api-key": apiKey }
+  });
+  const result = await readGoogleResponse(response);
+  if (!response.ok) {
+    console.error("Gemini models.list request failed.", {
+      status: response.status,
+      statusText: response.statusText,
+      googleError: sanitizeGoogleError(result)
+    });
+    throw new Error("Gemini models could not be discovered.");
+  }
+
+  const models = Array.isArray(result.models)
+    ? result.models.filter((model: { name?: unknown; supportedGenerationMethods?: unknown }) =>
+      typeof model.name === "string" && Array.isArray(model.supportedGenerationMethods) && model.supportedGenerationMethods.includes("generateContent"))
+    : [];
+  const modelNames = models.map((model: { name: string }) => model.name.replace(/^models\//, ""));
+  const preferredNames = ["gemini-3.8-flash", "gemini-3.5-flash", "gemini-2.5-flash", "gemini-2.0-flash", "gemini-1.5-flash"];
+  const selectedModel = preferredNames.find((name) => modelNames.includes(name)) || modelNames.find((name) => /flash/i.test(name)) || modelNames[0];
+  if (!selectedModel) throw new Error("No Gemini model supporting generateContent is available.");
+
+  cachedModelName = selectedModel;
+  cachedModelExpiresAt = Date.now() + 5 * 60 * 1000;
+  console.info("Gemini generateContent model selected.", { model: selectedModel });
+  return selectedModel;
 }
 
 function validateMessages(value: unknown) {
@@ -108,29 +161,24 @@ serve(async (request) => {
   }));
 
   try {
-    const geminiUrl = new URL("https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent");
-    geminiUrl.searchParams.set("key", geminiApiKey);
+    const modelName = await discoverGenerateContentModel(geminiApiKey);
+    const geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(modelName)}:generateContent`;
     const geminiResponse = await fetch(geminiUrl, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", "x-goog-api-key": geminiApiKey },
       body: JSON.stringify({
         systemInstruction: { parts: [{ text: systemInstruction(restaurant.name, membership.role) }] },
         contents,
         generationConfig: { temperature: 0.2, maxOutputTokens: 700 }
       })
     });
-    const responseBody = await geminiResponse.text();
-    let result: Record<string, any> = {};
-    try {
-      result = responseBody ? JSON.parse(responseBody) : {};
-    } catch {
-      result = { raw: responseBody.slice(0, 2000) };
-    }
+    const result = await readGoogleResponse(geminiResponse);
     if (!geminiResponse.ok) {
       console.error("Gemini API request failed.", {
         status: geminiResponse.status,
         statusText: geminiResponse.statusText,
-        googleError: result.error || result.raw || "No error body returned."
+        model: modelName,
+        googleError: sanitizeGoogleError(result)
       });
       return json({ error: "The assistant could not respond right now. Please try again." }, 502);
     }

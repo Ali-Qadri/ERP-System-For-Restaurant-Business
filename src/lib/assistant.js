@@ -14,6 +14,7 @@ export function initAssistant() {
   const sendButton = root.querySelector(".assistant-send");
   const status = root.querySelector(".assistant-status");
   const history = [];
+  let isLoading = false;
 
   const scrollToLatest = () => { messages.scrollTop = messages.scrollHeight; };
   const setOpen = (open) => {
@@ -29,18 +30,21 @@ export function initAssistant() {
     scrollToLatest();
   };
   const setLoading = (loading) => {
+    isLoading = loading;
     sendButton.disabled = loading;
     input.disabled = loading;
     status.hidden = !loading;
   };
   const ask = async (question) => {
     const content = question.trim();
-    if (!content || sendButton.disabled) return;
+    if (!content || isLoading) return;
     addMessage("user", content);
     history.push({ role: "user", content });
     while (history.length > maxHistory) history.shift();
     input.value = "";
     setLoading(true);
+    const controller = new AbortController();
+    const timeout = window.setTimeout(() => controller.abort(), 30000);
     try {
       const { data: sessionData, error: sessionError } = await supabase.auth.getSession();
       if (sessionError || !sessionData.session?.access_token) throw new Error("Your session has expired. Please sign in again.");
@@ -51,7 +55,8 @@ export function initAssistant() {
           apikey: supabaseAnonKey,
           "Content-Type": "application/json"
         },
-        body: JSON.stringify({ messages: history })
+        body: JSON.stringify({ messages: history }),
+        signal: controller.signal
       });
       const result = await response.json().catch(() => ({}));
       if (!response.ok || !result.message) throw new Error(result.error || "The assistant could not respond right now.");
@@ -59,8 +64,12 @@ export function initAssistant() {
       while (history.length > maxHistory) history.shift();
       addMessage("assistant", result.message);
     } catch (error) {
-      addMessage("assistant", error.message || "The assistant could not respond right now.", "error");
+      const message = error.name === "AbortError"
+        ? "The assistant took too long to respond. Please try again."
+        : error.message || "The assistant could not respond right now.";
+      addMessage("assistant", message, "error");
     } finally {
+      window.clearTimeout(timeout);
       setLoading(false);
       input.focus();
     }
