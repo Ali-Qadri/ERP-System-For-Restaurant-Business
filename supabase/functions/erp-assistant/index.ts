@@ -68,6 +68,14 @@ const operationTables: Record<string, string[]> = {
   get_dashboard_summary: ["orders", "reservations"]
 };
 
+const writeRoles: Record<string, Set<string>> = {
+  create_menu_item: new Set(["owner", "manager"]),
+  create_reservation: new Set(["owner", "manager", "staff_shared"]),
+  create_order: new Set(["owner", "manager", "staff_shared"])
+};
+
+const consumedConfirmationTokens = new Set<string>();
+
 const toolDeclarations = [
   ["get_employee_count", "Get the number of employees in the active restaurant."] ,
   ["get_menu_items", "Get active restaurant menu items and their categories."] ,
@@ -78,11 +86,57 @@ const toolDeclarations = [
   ["get_inventory_summary", "Summarize inventory quantities and low-stock count."] ,
   ["get_monthly_expenses", "Summarize expenses for the current calendar month."] ,
   ["get_reservations", "Get today's and upcoming restaurant reservations."] ,
-  ["get_dashboard_summary", "Summarize today's available restaurant activity."]
-].map(([name, description]) => ({
+  ["get_dashboard_summary", "Summarize today's available restaurant activity."],
+  ["create_menu_item", "Prepare a new menu item for explicit frontend confirmation. Never save it directly.", {
+    type: "OBJECT",
+    properties: {
+      name: { type: "STRING" },
+      price: { type: "NUMBER" },
+      categoryName: { type: "STRING" },
+      description: { type: "STRING" },
+      preparationTimeMinutes: { type: "INTEGER" }
+    },
+    required: ["name", "price", "categoryName"]
+  }],
+  ["create_reservation", "Prepare a new reservation for explicit frontend confirmation. Never save it directly.", {
+    type: "OBJECT",
+    properties: {
+      customerName: { type: "STRING" },
+      reservationAt: { type: "STRING" },
+      partySize: { type: "INTEGER" },
+      customerPhone: { type: "STRING" },
+      tableNumber: { type: "STRING" },
+      specialRequests: { type: "STRING" },
+      notes: { type: "STRING" }
+    },
+    required: ["customerName", "reservationAt", "partySize"]
+  }],
+  ["create_order", "Prepare a new order for explicit frontend confirmation. Never save it directly.", {
+    type: "OBJECT",
+    properties: {
+      orderType: { type: "STRING", enum: ["dine_in", "takeaway", "delivery"] },
+      customerName: { type: "STRING" },
+      customerPhone: { type: "STRING" },
+      tableNumber: { type: "STRING" },
+      notes: { type: "STRING" },
+      items: {
+        type: "ARRAY",
+        items: {
+          type: "OBJECT",
+          properties: {
+            itemName: { type: "STRING" },
+            quantity: { type: "INTEGER" }
+          },
+          required: ["itemName", "quantity"]
+        }
+      }
+    },
+    required: ["orderType", "items"]
+  }]
+].map(([name, description, parameters]) => ({
   name,
   description,
-  parameters: { type: "OBJECT", properties: {} }
+  parameters: parameters || { type: "OBJECT", properties: {} }
 }));
 
 function unavailableResult(role: string, operation: string) {
@@ -97,6 +151,193 @@ function unavailableResult(role: string, operation: string) {
 function databaseFailure(table: string, error: { code?: unknown; message?: unknown; status?: unknown }) {
   console.error("ERP Assistant read query failed.", { table, code: error?.code, status: error?.status });
   return { status: "error", message: "Live data could not be loaded for this dataset." };
+}
+
+function asRecord(value: unknown) {
+  return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : null;
+}
+
+function textValue(value: unknown) {
+  return typeof value === "string" && value.trim() ? value.trim() : "";
+}
+
+function numberValue(value: unknown) {
+  return typeof value === "number" && Number.isFinite(value) ? value : Number(value);
+}
+
+function normalizeName(value: string) {
+  return value.trim().toLocaleLowerCase();
+}
+
+function base64UrlEncode(value: string) {
+  return btoa(value).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
+}
+
+function base64UrlDecode(value: string) {
+  const padded = value.replace(/-/g, "+").replace(/_/g, "/") + "=".repeat((4 - value.length % 4) % 4);
+  return atob(padded);
+}
+
+async function signConfirmationPayload(payload: Record<string, unknown>, secret: string) {
+  const encodedPayload = base64UrlEncode(JSON.stringify(payload));
+  const key = await crypto.subtle.importKey("raw", new TextEncoder().encode(secret), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
+  const signature = await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(encodedPayload));
+  return `${encodedPayload}.${base64UrlEncode(String.fromCharCode(...new Uint8Array(signature)))}`;
+}
+
+async function verifyConfirmationToken(token: string, secret: string) {
+  const [encodedPayload, encodedSignature] = token.split(".");
+  if (!encodedPayload || !encodedSignature) return null;
+  const key = await crypto.subtle.importKey("raw", new TextEncoder().encode(secret), { name: "HMAC", hash: "SHA-256" }, false, ["verify"]);
+  const signatureBytes = Uint8Array.from(base64UrlDecode(encodedSignature), (character) => character.charCodeAt(0));
+  const valid = await crypto.subtle.verify("HMAC", key, signatureBytes, new TextEncoder().encode(encodedPayload));
+  if (!valid) return null;
+  try {
+    const payload = JSON.parse(base64UrlDecode(encodedPayload)) as { expiresAt?: unknown; userId?: unknown; restaurantId?: unknown; role?: unknown; action?: unknown; data?: unknown };
+    return typeof payload.expiresAt === "number" && payload.expiresAt > Date.now() ? payload : null;
+  } catch {
+    return null;
+  }
+}
+
+function pendingResult(action: string, data: Record<string, unknown>, title: string, fields: Array<{ label: string; value: string }>) {
+  return { status: "pending_confirmation", action, data, title, fields };
+}
+
+async function prepareWrite(client: ReturnType<typeof createClient>, restaurantId: string, role: string, action: string, args: unknown) {
+  if (!writeRoles[action]?.has(role)) return { status: "unavailable", message: `Your ${role} role cannot perform this action under the current restaurant access policies.` };
+  const input = asRecord(args);
+  if (!input) return { status: "error", message: "The action arguments are invalid." };
+
+  if (action === "create_menu_item") {
+    const name = textValue(input.name);
+    const categoryName = textValue(input.categoryName);
+    const price = numberValue(input.price);
+    const preparationTimeMinutes = input.preparationTimeMinutes === undefined ? 0 : numberValue(input.preparationTimeMinutes);
+    if (!name || !categoryName || !Number.isFinite(price) || price < 0 || !Number.isInteger(preparationTimeMinutes) || preparationTimeMinutes < 0) {
+      return { status: "needs_information", message: "A menu item needs a name, a non-negative price, a valid existing category, and an optional non-negative preparation time." };
+    }
+    const { data: categories, error } = await client.from("menu_categories").select("id, name").eq("restaurant_id", restaurantId).limit(100);
+    if (error) return databaseFailure("menu_categories", error);
+    const category = (categories || []).find((item) => normalizeName(item.name) === normalizeName(categoryName));
+    if (!category) return { status: "needs_information", message: "I could not find that menu category. Please provide the exact name of an existing category." };
+    const data = { categoryId: category.id, name, description: textValue(input.description) || null, price, preparationTimeMinutes };
+    return pendingResult(action, data, "New Menu Item", [
+      { label: "Name", value: name },
+      { label: "Price", value: String(price) },
+      { label: "Category", value: category.name },
+      { label: "Preparation time", value: `${preparationTimeMinutes} minutes` }
+    ]);
+  }
+
+  if (action === "create_reservation") {
+    const customerName = textValue(input.customerName);
+    const reservationAt = textValue(input.reservationAt);
+    const partySize = numberValue(input.partySize);
+    if (!customerName || !reservationAt || !Number.isInteger(partySize) || partySize <= 0 || Number.isNaN(new Date(reservationAt).getTime())) {
+      return { status: "needs_information", message: "A reservation needs a guest name, a valid date and time, and a party size greater than zero." };
+    }
+    const tableNumber = textValue(input.tableNumber);
+    let diningTableId: string | null = null;
+    let resolvedTable = "To be assigned";
+    if (tableNumber) {
+      const { data: tables, error } = await client.from("dining_tables").select("id, table_number").eq("restaurant_id", restaurantId).eq("table_number", tableNumber).limit(1);
+      if (error) return databaseFailure("dining_tables", error);
+      if (!tables?.[0]) return { status: "needs_information", message: "I could not find that dining table in this restaurant. Please provide an existing table number or leave the table unassigned." };
+      diningTableId = tables[0].id;
+      resolvedTable = `Table ${tables[0].table_number}`;
+    }
+    const data = { customerName, reservationAt: new Date(reservationAt).toISOString(), partySize, customerPhone: textValue(input.customerPhone) || null, diningTableId, specialRequests: textValue(input.specialRequests) || null, notes: textValue(input.notes) || null };
+    return pendingResult(action, data, "New Reservation", [
+      { label: "Guest", value: customerName },
+      { label: "When", value: new Date(reservationAt).toLocaleString("en-US", { dateStyle: "medium", timeStyle: "short" }) },
+      { label: "Party size", value: String(partySize) },
+      { label: "Table", value: resolvedTable }
+    ]);
+  }
+
+  if (action === "create_order") {
+    const orderType = textValue(input.orderType);
+    const itemsInput = Array.isArray(input.items) ? input.items : [];
+    if (!(new Set(["dine_in", "takeaway", "delivery"])).has(orderType) || itemsInput.length === 0 || itemsInput.length > 20) {
+      return { status: "needs_information", message: "An order needs a valid order type and at least one menu item." };
+    }
+    const requestedItems = itemsInput.map((item) => {
+      const row = asRecord(item);
+      return { itemName: textValue(row?.itemName), quantity: numberValue(row?.quantity) };
+    });
+    if (requestedItems.some((item) => !item.itemName || !Number.isInteger(item.quantity) || item.quantity <= 0 || item.quantity > 100)) return { status: "needs_information", message: "Each order item needs an existing menu item name and a quantity greater than zero." };
+    const { data: menu, error: menuError } = await client.from("menu_items").select("id, name, price, is_available").eq("restaurant_id", restaurantId).limit(200);
+    if (menuError) return databaseFailure("menu_items", menuError);
+    const resolvedItems = [] as Array<{ menuItemId: string; itemName: string; unitPrice: number; quantity: number; lineTotal: number }>;
+    for (const item of requestedItems) {
+      const matches = (menu || []).filter((menuItem) => normalizeName(menuItem.name) === normalizeName(item.itemName) && menuItem.is_available !== false);
+      if (matches.length !== 1) return { status: "needs_information", message: matches.length === 0 ? `I could not find an available menu item named “${item.itemName}”.` : `More than one available menu item matches “${item.itemName}”. Please use a more specific name.` };
+      const unitPrice = Number(matches[0].price);
+      resolvedItems.push({ menuItemId: matches[0].id, itemName: matches[0].name, unitPrice, quantity: item.quantity, lineTotal: unitPrice * item.quantity });
+    }
+    const tableNumber = textValue(input.tableNumber);
+    let diningTableId: string | null = null;
+    let resolvedTable = "No table assigned";
+    if (tableNumber) {
+      const { data: tables, error } = await client.from("dining_tables").select("id, table_number").eq("restaurant_id", restaurantId).eq("table_number", tableNumber).limit(1);
+      if (error) return databaseFailure("dining_tables", error);
+      if (!tables?.[0]) return { status: "needs_information", message: "I could not find that dining table in this restaurant." };
+      diningTableId = tables[0].id;
+      resolvedTable = `Table ${tables[0].table_number}`;
+    }
+    const subtotal = resolvedItems.reduce((total, item) => total + item.lineTotal, 0);
+    const data = { orderNumber: `AI-${Date.now().toString(36).toUpperCase()}-${crypto.randomUUID().slice(0, 8).toUpperCase()}`, orderType, customerName: textValue(input.customerName) || null, customerPhone: textValue(input.customerPhone) || null, diningTableId, notes: textValue(input.notes) || null, items: resolvedItems, subtotal, total: subtotal };
+    return pendingResult(action, data, "New Order", [
+      { label: "Type", value: orderType },
+      { label: "Items", value: resolvedItems.map((item) => `${item.quantity}× ${item.itemName}`).join(", ") },
+      { label: "Table", value: resolvedTable },
+      { label: "Total", value: String(subtotal) }
+    ]);
+  }
+  return { status: "error", message: "This write action is not supported." };
+}
+
+async function executeWrite(client: ReturnType<typeof createClient>, userId: string, restaurantId: string, role: string, action: string, data: unknown) {
+  if (!writeRoles[action]?.has(role)) return { status: "unavailable", message: `Your ${role} role cannot perform this action under the current restaurant access policies.` };
+  const input = asRecord(data);
+  if (!input) return { status: "error", message: "The confirmed action payload is invalid." };
+  if (action === "create_menu_item") {
+    if (typeof input.categoryId !== "string" || !textValue(input.name) || !Number.isFinite(numberValue(input.price)) || numberValue(input.price) < 0 || !Number.isInteger(numberValue(input.preparationTimeMinutes)) || numberValue(input.preparationTimeMinutes) < 0) return { status: "error", message: "The confirmed menu item payload is invalid." };
+    const { data: category, error: categoryError } = await client.from("menu_categories").select("id").eq("restaurant_id", restaurantId).eq("id", input.categoryId).maybeSingle();
+    if (categoryError || !category) return { status: "error", message: "The selected menu category is no longer available." };
+    const { data: row, error } = await client.from("menu_items").insert({ restaurant_id: restaurantId, category_id: input.categoryId, name: input.name, description: input.description, price: input.price, preparation_time_minutes: input.preparationTimeMinutes, is_available: true }).select("id, name, price").single();
+    return error ? { status: "error", message: "The menu item could not be created." } : { status: "success", message: `Menu item “${row.name}” was created.` };
+  }
+  if (action === "create_reservation") {
+    if (!textValue(input.customerName) || typeof input.reservationAt !== "string" || Number.isNaN(new Date(input.reservationAt).getTime()) || !Number.isInteger(numberValue(input.partySize)) || numberValue(input.partySize) <= 0) return { status: "error", message: "The confirmed reservation payload is invalid." };
+    if (input.diningTableId !== null && typeof input.diningTableId !== "string") return { status: "error", message: "The confirmed reservation table is invalid." };
+    if (input.diningTableId) {
+      const { data: table, error: tableError } = await client.from("dining_tables").select("id").eq("restaurant_id", restaurantId).eq("id", input.diningTableId).maybeSingle();
+      if (tableError || !table) return { status: "error", message: "The selected dining table is no longer available." };
+    }
+    const { data: row, error } = await client.from("reservations").insert({ restaurant_id: restaurantId, dining_table_id: input.diningTableId, customer_name: input.customerName, customer_phone: input.customerPhone, party_size: input.partySize, reservation_at: input.reservationAt, status: "pending", special_requests: input.specialRequests, notes: input.notes }).select("id, customer_name").single();
+    return error ? { status: "error", message: "The reservation could not be created." } : { status: "success", message: `Reservation for “${row.customer_name}” was created.` };
+  }
+  if (action === "create_order") {
+    const items = Array.isArray(input.items) ? input.items : [];
+    if (!textValue(input.orderNumber) || !(new Set(["dine_in", "takeaway", "delivery"])).has(String(input.orderType)) || !Number.isFinite(numberValue(input.subtotal)) || numberValue(input.subtotal) < 0 || !Number.isFinite(numberValue(input.total)) || numberValue(input.total) < 0 || items.length === 0 || items.length > 20 || items.some((item) => { const row = asRecord(item); return !row || typeof row.menuItemId !== "string" || !textValue(row.itemName) || !Number.isInteger(numberValue(row.quantity)) || numberValue(row.quantity) <= 0 || !Number.isFinite(numberValue(row.unitPrice)) || numberValue(row.unitPrice) < 0 || !Number.isFinite(numberValue(row.lineTotal)) || numberValue(row.lineTotal) < 0; })) return { status: "error", message: "The confirmed order payload is invalid." };
+    if (input.diningTableId !== null && typeof input.diningTableId !== "string") return { status: "error", message: "The confirmed order table is invalid." };
+    if (input.diningTableId) {
+      const { data: table, error: tableError } = await client.from("dining_tables").select("id").eq("restaurant_id", restaurantId).eq("id", input.diningTableId).maybeSingle();
+      if (tableError || !table) return { status: "error", message: "The selected dining table is no longer available." };
+    }
+    const menuItemIds = items.map((item) => (item as Record<string, unknown>).menuItemId);
+    const { data: menuItems, error: menuError } = await client.from("menu_items").select("id, is_available").eq("restaurant_id", restaurantId).in("id", menuItemIds);
+    if (menuError || (menuItems || []).length !== new Set(menuItemIds).size || (menuItems || []).some((item) => item.is_available === false)) return { status: "error", message: "One or more selected menu items are no longer available." };
+    const { data: order, error: orderError } = await client.from("orders").insert({ restaurant_id: restaurantId, order_number: input.orderNumber, dining_table_id: input.diningTableId, order_type: input.orderType, customer_name: input.customerName, customer_phone: input.customerPhone, status: "pending", payment_status: "unpaid", subtotal: input.subtotal, tax_amount: 0, discount_amount: 0, total_amount: input.total, notes: input.notes, created_by: userId }).select("id, order_number").single();
+    if (orderError) return { status: "error", message: "The order could not be created." };
+    const orderItems = items.map((item) => ({ restaurant_id: restaurantId, order_id: order.id, menu_item_id: item.menuItemId, item_name: item.itemName, unit_price: item.unitPrice, quantity: item.quantity, line_total: item.lineTotal }));
+    const { error: itemError } = await client.from("order_items").insert(orderItems);
+    if (itemError) return { status: "error", message: "The order was created but its items could not be saved. Please ask a manager to review the order." };
+    return { status: "success", message: `Order #${order.order_number} was created.` };
+  }
+  return { status: "error", message: "This write action is not supported." };
 }
 
 function dateKeyInTimezone(date: Date, timezone: string) {
@@ -221,13 +462,14 @@ const systemInstruction = (restaurantName: string, role: string) => `
 You are ERP Assistant for ${restaurantName || "the user's restaurant"}.
 The authenticated user's verified restaurant role is ${role}.
 
-You are an informational help assistant for this restaurant ERP. Answer only questions about the application's existing features: dashboard and reports; employees; menu categories and menu items; tables and orders; reservations; inventory and suppliers; shifts and attendance; leave and replacement requests; expenses and payments; and restaurant settings.
+You are a help and controlled-action assistant for this restaurant ERP. Answer only questions about the application's existing features: dashboard and reports; employees; menu categories and menu items; tables and orders; reservations; inventory and suppliers; shifts and attendance; leave and replacement requests; expenses and payments; and restaurant settings.
 
 Use simple, friendly language and clear step-by-step instructions. Tailor explanations to the verified role: owner users can manage restaurant settings, manager users can manage operational workflows, and staff_shared users should be guided only toward the sections available to staff. Do not claim that a role can access a section if the application restricts it.
 
 When a live-data question is asked, use an approved read-only data operation when available. Explain the returned records accurately and distinguish zero results from unavailable data or a query failure. You may not infer or invent numbers.
+You may prepare create_menu_item, create_reservation, or create_order only when the user clearly asks for that action and all required details are available. The server will show the user a preview; never claim that a record was saved during preparation. A record is saved only after the application sends an explicit confirmation. Ask for missing details instead of guessing.
 Never invent screens, buttons, fields, reports, integrations, or data, and you must not ask for passwords, tokens, or sensitive credentials.
-This assistant is informational only. Never create, edit, delete, approve, export, or otherwise mutate ERP records. Never execute SQL, call unapproved database tools, or provide instructions to bypass authentication, role restrictions, RLS, or restaurant boundaries.
+This assistant may create only the three explicitly supported record types after application confirmation. Never edit, delete, approve, export, or otherwise mutate ERP records. Never execute SQL, call unapproved database tools, or provide instructions to bypass authentication, role restrictions, RLS, or restaurant boundaries.
 Politely redirect unrelated questions by saying you can help with the ERP topics listed above.
 `.trim();
 
@@ -244,16 +486,23 @@ serve(async (request) => {
   const geminiApiKey = Deno.env.get("GEMINI_API_KEY");
   if (!supabaseUrl || !anonKey || !geminiApiKey) return json({ error: "The assistant is not configured correctly." }, 500);
 
-  let input: { messages?: unknown };
+  let input: { messages?: unknown; confirmationToken?: unknown; requestType?: unknown };
   try {
     const requestBody = await request.text();
     if (requestBody.length > maxRequestBodyLength) return json({ error: "The assistant request is too large." }, 413);
-    input = JSON.parse(requestBody);
+    const parsed = JSON.parse(requestBody);
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return json({ error: "Request body must be a JSON object." }, 400);
+    input = parsed as typeof input;
   } catch {
     return json({ error: "Request body must be valid JSON." }, 400);
   }
-  const validationError = validateMessages(input.messages);
-  if (validationError) return json({ error: validationError }, 400);
+  const isConfirmation = input.requestType === "confirm";
+  if (isConfirmation) {
+    if (typeof input.confirmationToken !== "string" || input.confirmationToken.length > 6000) return json({ error: "The confirmation is invalid or expired." }, 400);
+  } else {
+    const validationError = validateMessages(input.messages);
+    if (validationError) return json({ error: validationError }, 400);
+  }
 
   const accessToken = authorization.replace(/^Bearer\s+/i, "");
   const userClient = createClient(supabaseUrl, anonKey, {
@@ -290,6 +539,18 @@ serve(async (request) => {
     .eq("id", membership.restaurant_id)
     .maybeSingle();
   if (restaurantError || !restaurant) return json({ error: "Your restaurant could not be verified." }, 403);
+
+  if (isConfirmation) {
+    const confirmationToken = input.confirmationToken as string;
+    const confirmationSecret = Deno.env.get("SUPABASE_JWT_SECRET") || geminiApiKey;
+    const pending = await verifyConfirmationToken(confirmationToken, confirmationSecret);
+    if (!pending || pending.userId !== userData.user.id || pending.restaurantId !== membership.restaurant_id || pending.role !== membership.role || typeof pending.action !== "string") return json({ error: "This confirmation is invalid or expired. Please prepare the action again." }, 409);
+    if (consumedConfirmationTokens.has(confirmationToken)) return json({ error: "This confirmation has already been used." }, 409);
+    consumedConfirmationTokens.add(confirmationToken);
+    const result = await executeWrite(userClient, userData.user.id, membership.restaurant_id, membership.role, pending.action, pending.data);
+    if (result.status === "success") return json({ message: result.message });
+    return json({ error: result.message }, result.status === "unavailable" ? 403 : 400);
+  }
 
   let conversation = (input.messages as Array<{ role: string; content: string }>).map((message) => ({
     role: message.role === "assistant" ? "model" : "user",
@@ -347,9 +608,24 @@ serve(async (request) => {
         for (const functionCall of functionCalls) {
           const operation = typeof functionCall.name === "string" ? functionCall.name : "";
           const args = functionCall.args || {};
-          const invalidArguments = !operationTables[operation] || !args || typeof args !== "object" || Array.isArray(args) || Object.keys(args).length > 0;
-          const toolResult = invalidArguments
-            ? { status: "error", message: "The requested data operation or arguments are not supported." }
+          const isWrite = Boolean(writeRoles[operation]);
+          const invalidArguments = (!operationTables[operation] && !isWrite) || !args || typeof args !== "object" || Array.isArray(args);
+          if (invalidArguments) {
+            conversation.push({ role: "user", parts: [{ functionResponse: { name: operation, response: { result: { status: "error", message: "The requested data operation or arguments are not supported." } } } }] });
+            continue;
+          }
+          if (isWrite) {
+            const prepared = await prepareWrite(userClient, membership.restaurant_id, membership.role, operation, args);
+            if (prepared.status === "pending_confirmation") {
+              const confirmationSecret = Deno.env.get("SUPABASE_JWT_SECRET") || geminiApiKey;
+              const confirmationToken = await signConfirmationPayload({ version: 1, userId: userData.user.id, restaurantId: membership.restaurant_id, role: membership.role, action: operation, data: prepared.data, expiresAt: Date.now() + 10 * 60 * 1000, nonce: crypto.randomUUID() }, confirmationSecret);
+              return json({ message: "Please review this proposed record and choose Confirm or Cancel.", pendingAction: { token: confirmationToken, action: operation, title: prepared.title, fields: prepared.fields, expiresAt: Date.now() + 10 * 60 * 1000 } });
+            }
+            conversation.push({ role: "user", parts: [{ functionResponse: { name: operation, response: { result: prepared } } }] });
+            continue;
+          }
+          const toolResult = Object.keys(args).length > 0
+            ? { status: "error", message: "This read operation does not accept arguments." }
             : await readOperation(userClient, membership.restaurant_id, membership.role, operation, timezone);
           conversation.push({ role: "user", parts: [{ functionResponse: { name: operation, response: { result: toolResult } } }] });
         }

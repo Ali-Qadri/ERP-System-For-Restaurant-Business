@@ -702,6 +702,14 @@ textarea:focus { border-color: #ba826d; box-shadow: 0 0 0 2px #f7ece7; }
 .assistant-message.assistant { align-self: flex-start; border: 1px solid #e7ece6; background: #f8faf7; }
 .assistant-message.user { align-self: flex-end; background: var(--green); color: #fff; }
 .assistant-message.error { border-color: #efd8d2; background: #fff6f3; color: #a55e4d; }
+.assistant-pending-card { display: grid; gap: 10px; max-width: 92%; padding: 12px; border: 1px solid #d7e3d5; border-radius: 10px; background: #fbfdf9; color: #445047; font-size: 10px; }
+.assistant-pending-title { color: #36463b; font-size: 11px; }
+.assistant-pending-fields { display: grid; gap: 6px; }
+.assistant-pending-fields div { display: flex; justify-content: space-between; gap: 12px; border-bottom: 1px solid #edf1eb; padding-bottom: 5px; }
+.assistant-pending-fields span { color: #89958b; }
+.assistant-pending-fields strong { color: #4d5e50; text-align: right; }
+.assistant-pending-actions { display: flex; justify-content: flex-end; gap: 7px; }
+.assistant-pending-actions button { min-height: 29px; padding: 0 10px; font-size: 10px; }
 .assistant-suggestions { display: grid; gap: 7px; margin-top: 2px; }
 .assistant-suggestion { padding: 8px 10px; border: 1px solid #dfe8de; border-radius: 8px; background: #fff; color: #5d6b60; cursor: pointer; font: inherit; font-size: 10px; text-align: left; }
 .assistant-suggestion:hover { border-color: #a9bca9; background: #f7faf6; }
