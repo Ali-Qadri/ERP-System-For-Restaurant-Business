@@ -250,7 +250,7 @@ async function main() {
   if (existingSettings) record("restaurant_settings", 0, 1);
   else await insertDeterministic("restaurant_settings", [{ id: seededUuid("restaurant-settings", tenantId), restaurant_id: tenantId, settings }]);
 
-  unmapped.push("restaurant.name ('Juniper Table') was not written because the required destination restaurant already exists and must not be overwritten");
+  unmapped.push("restaurant.name was not written because the required destination restaurant already exists and must not be overwritten");
   unmapped.push("menu.popular, menu item preparation times, employee initials/colors, complaint submittedAt/category/severity, wage period/method/status, expense vendor/status/paymentMethod, and order stockApplied have no dedicated columns; supported values were preserved in existing text fields where safe or reported here");
   unmapped.push("sales and salesLabels are presentation-only chart fixtures; reports must be derived from orders/order_items instead");
   unmapped.push("notifications has no mock collection; no notification rows were seeded");

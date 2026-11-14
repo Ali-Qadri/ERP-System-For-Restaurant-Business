@@ -5,7 +5,7 @@ const mockDate = (offsetDays) => {
 };
 
 const restaurantData = {
-  restaurant: { name: "Juniper Table", location: "Downtown", currency: "USD" },
+  restaurant: { name: "ERP Business System", location: "Downtown", currency: "USD" },
   menu: [
     { id: 1, name: "Wild mushroom risotto", category: "Mains", description: "Arborio rice, wild mushrooms, parmesan", price: 24, popular: true, image: "assets/food/wild-mushroom-risotto.jpg", recipe: [{ ingredientId: 1, quantity: 0.18 }, { ingredientId: 2, quantity: 0.12 }, { ingredientId: 3, quantity: 0.04 }] },
     { id: 2, name: "Crispy chicken sandwich", category: "Mains", description: "Buttermilk chicken, slaw, brioche bun", price: 19, popular: true, image: "https://images.unsplash.com/photo-1606755962773-d324e0a13086?auto=format&fit=crop&w=800&q=82", recipe: [{ ingredientId: 4, quantity: 0.2 }, { ingredientId: 5, quantity: 1 }] },

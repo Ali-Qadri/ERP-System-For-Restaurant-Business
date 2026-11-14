@@ -4,15 +4,15 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <meta name="theme-color" content="#f7f8f6">
-    <title>Juniper Table | Restaurant Operations</title>
+    <title>ERP Business System</title>
     <link rel="stylesheet" href="styles.css">
   </head>
   <body>
     <section id="login-screen" class="login-screen" aria-labelledby="login-title">
       <div class="login-card">
         <div class="login-brand">
-          <span class="brand-mark">J</span>
-          <span class="brand-copy"><strong>juniper</strong><small>TABLE &amp; KITCHEN</small></span>
+          <span class="brand-mark" data-brand-mark>E</span>
+          <span class="brand-copy"><strong data-brand-name>ERP Business System</strong><small>RESTAURANT OPERATIONS</small></span>
         </div>
         <div class="login-heading">
           <span class="eyebrow">RESTAURANT OPERATIONS</span>
@@ -33,8 +33,8 @@
     <section id="forgot-password-screen" class="login-screen" aria-labelledby="forgot-password-title" hidden>
       <div class="login-card">
         <div class="login-brand">
-          <span class="brand-mark">J</span>
-          <span class="brand-copy"><strong>juniper</strong><small>TABLE &amp; KITCHEN</small></span>
+          <span class="brand-mark" data-brand-mark>E</span>
+          <span class="brand-copy"><strong data-brand-name>ERP Business System</strong><small>RESTAURANT OPERATIONS</small></span>
         </div>
         <div class="login-heading">
           <span class="eyebrow">ACCOUNT RECOVERY</span>
@@ -53,8 +53,8 @@
     <section id="reset-password-screen" class="login-screen" aria-labelledby="reset-password-title" hidden>
       <div class="login-card">
         <div class="login-brand">
-          <span class="brand-mark">J</span>
-          <span class="brand-copy"><strong>juniper</strong><small>TABLE &amp; KITCHEN</small></span>
+          <span class="brand-mark" data-brand-mark>E</span>
+          <span class="brand-copy"><strong data-brand-name>ERP Business System</strong><small>RESTAURANT OPERATIONS</small></span>
         </div>
         <div class="login-heading">
           <span class="eyebrow">ACCOUNT RECOVERY</span>
@@ -75,9 +75,9 @@
 
     <div class="app-shell" hidden>
       <aside class="sidebar">
-        <a class="brand" href="#" aria-label="Restaurant home" data-view="overview">
-          <span class="brand-mark">J</span>
-          <span class="brand-copy"><strong>juniper</strong><small>TABLE &amp; KITCHEN</small></span>
+        <a class="brand" href="#" aria-label="ERP Business System home" data-brand-home data-view="overview">
+          <span class="brand-mark" data-brand-mark>E</span>
+          <span class="brand-copy"><strong data-brand-name>ERP Business System</strong><small>RESTAURANT OPERATIONS</small></span>
         </a>
         <div class="restaurant-switcher">
           <span class="restaurant-avatar">…</span>
@@ -123,6 +123,15 @@
         </header>
         <div id="app" class="page-content"></div>
       </main>
+    </div>
+    <div id="erp-assistant" class="erp-assistant">
+      <button class="assistant-launcher" type="button" aria-label="Open ERP Assistant" data-assistant-action="open"><span>✦</span><strong>ERP Assistant</strong></button>
+      <section class="assistant-panel" aria-label="ERP Assistant chat" hidden>
+        <header class="assistant-header"><div><strong>ERP Assistant</strong><small>Informational help for your restaurant workspace</small></div><div class="assistant-header-actions"><button type="button" aria-label="Start a new assistant conversation" data-assistant-action="clear">↻</button><button type="button" aria-label="Close ERP Assistant" data-assistant-action="close">×</button></div></header>
+        <div class="assistant-messages" aria-live="polite"><div class="assistant-message assistant">Hi! I can help you understand the ERP and find your way around it.</div><div class="assistant-suggestions"><button class="assistant-suggestion" type="button">How do I add a menu item?</button><button class="assistant-suggestion" type="button">Where can I review today’s orders?</button><button class="assistant-suggestion" type="button">How do I record an expense?</button></div></div>
+        <div class="assistant-status" role="status" hidden><span></span>Thinking…</div>
+        <form class="assistant-form"><input class="assistant-input" name="assistantMessage" aria-label="Message ERP Assistant" autocomplete="off" placeholder="Ask about your ERP…" maxlength="4000"><button class="assistant-send" type="submit" aria-label="Send message">↑</button></form>
+      </section>
     </div>
     <div id="modal-root"></div>
     <div id="toast" class="toast" role="status" aria-live="polite"></div>

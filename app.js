@@ -1,6 +1,8 @@
 import { supabase, isSupabaseConfigured } from "./src/lib/supabaseClient.js";
 import { money, escapeHtml as esc, initials, timeNow } from "./src/lib/formatters.js";
 import { createRestaurantDataStore } from "./src/lib/restaurantData.js";
+import { setApplicationBranding } from "./src/lib/branding.js";
+import { initAssistant } from "./src/lib/assistant.js";
 
 export async function startDashboard({ user, profile, membership, restaurant, restaurantError, role } = {}) {
   const app = document.getElementById("app");
@@ -53,6 +55,7 @@ export async function startDashboard({ user, profile, membership, restaurant, re
     document.querySelector(".profile-button strong").textContent = displayName;
     document.querySelector(".profile-button small").textContent = displayRole;
     const restaurantName = authRestaurant.name;
+    setApplicationBranding(restaurantName);
     const restaurantNameElement = document.querySelector(".restaurant-name strong");
     const restaurantDetailsElement = document.querySelector(".restaurant-name small");
     const restaurantAvatarElement = document.querySelector(".restaurant-avatar");
@@ -821,7 +824,7 @@ export async function startDashboard({ user, profile, membership, restaurant, re
     const file = new Blob([JSON.stringify(state, null, 2)], { type: "application/json" });
     const link = document.createElement("a");
     link.href = URL.createObjectURL(file);
-    link.download = "juniper-table-backup.json";
+    link.download = "erp-business-system-backup.json";
     link.click();
     URL.revokeObjectURL(link.href);
     showToast("Restaurant data backup exported.");
@@ -833,7 +836,7 @@ export async function startDashboard({ user, profile, membership, restaurant, re
     const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
     const link = document.createElement("a");
     link.href = URL.createObjectURL(blob);
-    link.download = "juniper-table-orders.csv";
+    link.download = "erp-business-system-orders.csv";
     link.click();
     URL.revokeObjectURL(link.href);
     showToast("Orders exported as CSV.");
@@ -845,7 +848,7 @@ export async function startDashboard({ user, profile, membership, restaurant, re
     const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
     const link = document.createElement("a");
     link.href = URL.createObjectURL(blob);
-    link.download = "juniper-table-team.csv";
+    link.download = "erp-business-system-team.csv";
     link.click();
     URL.revokeObjectURL(link.href);
     showToast("Team schedule exported.");
@@ -860,7 +863,7 @@ export async function startDashboard({ user, profile, membership, restaurant, re
     const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
     const link = document.createElement("a");
     link.href = URL.createObjectURL(blob);
-    link.download = "juniper-table-timesheets.csv";
+    link.download = "erp-business-system-timesheets.csv";
     link.click();
     URL.revokeObjectURL(link.href);
     showToast("Timesheets exported.");
@@ -1337,6 +1340,7 @@ export async function startDashboard({ user, profile, membership, restaurant, re
   });
 
   applyIdentity();
+  initAssistant();
   configureNavigation();
   if (dataStore) {
     try {

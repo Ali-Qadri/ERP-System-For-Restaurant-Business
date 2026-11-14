@@ -2,6 +2,7 @@ import { startDashboard } from "../app.js";
 import { startSuperAdminDashboard } from "./superAdminDashboard.js";
 import { getCurrentAuthContext, signIn, signOut } from "./lib/auth.js";
 import { isSupabaseConfigured, requireSupabase, supabase } from "./lib/supabaseClient.js";
+import { setApplicationBranding } from "./lib/branding.js";
 
 const loginScreen = document.getElementById("login-screen");
 const forgotScreen = document.getElementById("forgot-password-screen");
@@ -18,6 +19,8 @@ const RECOVERY_REDIRECT_URL = "https://erp-system-for-restaurant-business.vercel
 let dashboardStarted = false;
 let recoverySessionAvailable = false;
 
+setApplicationBranding();
+
 function isRecoveryUrl() {
   const hashParams = new URLSearchParams(window.location.hash.replace(/^#/, ""));
   const searchParams = new URLSearchParams(window.location.search);
@@ -32,6 +35,7 @@ function hideAuthScreens() {
 
 function showLogin(message = "") {
   hideAuthScreens();
+  setApplicationBranding();
   loginScreen.hidden = false;
   dashboard.hidden = true;
   superAdminRoot.hidden = true;

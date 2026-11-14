@@ -1,4 +1,5 @@
 import { requireSupabase } from "./lib/supabaseClient.js";
+import { setApplicationBranding } from "./lib/branding.js";
 
 function escapeHtml(value) {
   return String(value ?? "").replace(/[&<>"']/g, (char) => ({
@@ -28,14 +29,15 @@ function slugify(value) {
 }
 
 export async function startSuperAdminDashboard({ user } = {}) {
+  setApplicationBranding();
   const root = document.getElementById("super-admin-root");
   const email = user?.email || "Platform administrator";
 
   root.innerHTML = `<div class="super-admin-shell">
     <aside class="super-admin-sidebar">
-      <a class="brand" href="#" data-super-view="overview" aria-label="Juniper Table platform home">
-        <span class="brand-mark">J</span>
-        <span class="brand-copy"><strong>juniper</strong><small>TABLE &amp; KITCHEN</small></span>
+      <a class="brand" href="#" data-super-view="overview" aria-label="ERP Business System platform home">
+        <span class="brand-mark" data-brand-mark>E</span>
+        <span class="brand-copy"><strong data-brand-name>ERP Business System</strong><small>PLATFORM ADMINISTRATION</small></span>
       </a>
       <div class="super-admin-label">PLATFORM ADMIN</div>
       <nav class="super-admin-nav" aria-label="Platform administration">
