@@ -5,7 +5,7 @@ const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY;
 
 export const isSupabaseConfigured = Boolean(supabaseUrl && supabaseAnonKey);
 
-// The demo remains usable with localStorage until project credentials are supplied.
+// Business data is available only when the authenticated Supabase client is configured.
 export const supabase = isSupabaseConfigured
   ? createClient(supabaseUrl, supabaseAnonKey, {
       auth: {

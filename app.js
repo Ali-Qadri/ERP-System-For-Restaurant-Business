@@ -1,21 +1,24 @@
-import seed from "./mockData.js";
 import { supabase, isSupabaseConfigured } from "./src/lib/supabaseClient.js";
-import { clone, money, escapeHtml as esc, initials, timeNow } from "./src/lib/formatters.js";
-import { createLocalStorage } from "./src/lib/localStorage.js";
+import { money, escapeHtml as esc, initials, timeNow } from "./src/lib/formatters.js";
+import { createRestaurantDataStore } from "./src/lib/restaurantData.js";
 
-export async function startDashboard({ user, profile, membership, role } = {}) {
-  const STORAGE_KEY = "juniper-table-erp-v1";
+export async function startDashboard({ user, profile, membership, restaurant, restaurantError, role } = {}) {
   const app = document.getElementById("app");
   const modalRoot = document.getElementById("modal-root");
   const toast = document.getElementById("toast");
   const backend = isSupabaseConfigured ? supabase : null;
   const authProfile = profile || {};
   const authMembership = membership || {};
+  const authRestaurant = restaurant || {};
   const authRole = role || "staff_shared";
+  const staffViews = new Set(["orders", "menu", "reservations", "complaints"]);
+  const viewLabels = { overview: "Overview", orders: "Orders", kitchen: "Kitchen", menu: "Menu", inventory: "Inventory", team: "Employees", reservations: "Reservations", accounting: "Accounting", complaints: "Complaints", reports: "Reports", settings: "Settings" };
+  const requestedView = window.location.hash.replace(/^#/, "");
   const safeImage = (image) => /^(assets\/food\/[a-z0-9-]+\.jpg|https:\/\/images\.unsplash\.com\/|data:image\/(?:jpeg|png|webp);base64,)/i.test(String(image || "")) ? image : "";
   const dayNames = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"];
-  let state;
-  let view = "overview";
+  let state = { menu: [], inventory: [], team: [], diningTables: [], reservations: [], orders: [], leaveRequests: [], replacementRequests: [], expenses: [], complaints: [], wagePayments: [], timeEntries: [], notifications: [], payments: [], suppliers: [], inventoryMovements: [], menuItemIngredients: [], seenReservationIds: [] };
+  let deniedView = viewLabels[requestedView] && ((requestedView === "settings" && authRole !== "owner") || (authRole === "staff_shared" && !staffViews.has(requestedView))) ? requestedView : "";
+  let view = deniedView ? "access-denied" : (viewLabels[requestedView] || (authRole === "staff_shared" ? "orders" : "overview"));
   let orderFilter = "All orders";
   let menuFilter = "All";
   let menuSearch = "";
@@ -33,9 +36,7 @@ export async function startDashboard({ user, profile, membership, role } = {}) {
   let complaintStatusFilter = "All statuses";
   let complaintSeverityFilter = "All priorities";
   let toastTimer;
-  let baselineCompletedSales = 0;
-
-  if (backend) console.info("Supabase client configured; demo state remains local until persistence is connected.");
+  let dataError = "";
 
   function showToast(message) {
     toast.textContent = message;
@@ -51,13 +52,93 @@ export async function startDashboard({ user, profile, membership, role } = {}) {
     document.querySelector(".profile-button .profile-avatar").textContent = initials(displayName);
     document.querySelector(".profile-button strong").textContent = displayName;
     document.querySelector(".profile-button small").textContent = displayRole;
-    const restaurantName = authMembership.restaurant_name || authMembership.restaurant?.name;
-    if (restaurantName) document.querySelector(".restaurant-name strong").textContent = restaurantName;
+    const restaurantName = authRestaurant.name;
+    const restaurantNameElement = document.querySelector(".restaurant-name strong");
+    const restaurantDetailsElement = document.querySelector(".restaurant-name small");
+    const restaurantAvatarElement = document.querySelector(".restaurant-avatar");
+    const breadcrumbRestaurantElement = document.querySelector(".breadcrumb > span:first-child");
+    const brandElement = document.querySelector(".brand");
+    if (restaurantName) {
+      restaurantNameElement.textContent = restaurantName;
+      restaurantDetailsElement.textContent = "Active restaurant";
+      restaurantAvatarElement.textContent = initials(restaurantName);
+      breadcrumbRestaurantElement.textContent = restaurantName;
+      brandElement.setAttribute("aria-label", `${restaurantName} home`);
+    } else {
+      restaurantNameElement.textContent = restaurantError ? "Restaurant unavailable" : "Loading restaurant…";
+      restaurantDetailsElement.textContent = restaurantError ? "Details could not be loaded" : "Loading details…";
+      restaurantAvatarElement.textContent = "…";
+    }
   }
 
-  const storage = createLocalStorage({ storageKey: STORAGE_KEY, seed, clone, onError: showToast, supabase: backend });
-  const saveState = () => storage.save(state);
-  const loadState = () => { state = storage.load(); };
+  function canAccessView(nextView) {
+    if (nextView === "settings") return authRole === "owner";
+    return authRole !== "staff_shared" || staffViews.has(nextView);
+  }
+
+  function configureNavigation() {
+    document.querySelectorAll(".nav-item").forEach((button) => {
+      button.hidden = !canAccessView(button.dataset.view);
+    });
+  }
+
+  function navigateTo(nextView) {
+    if (!canAccessView(nextView)) {
+      deniedView = nextView;
+      view = "access-denied";
+      render();
+      return;
+    }
+    deniedView = "";
+    view = nextView;
+    render();
+  }
+
+  window.addEventListener("hashchange", () => {
+    const nextView = window.location.hash.replace(/^#/, "");
+    if (viewLabels[nextView]) navigateTo(nextView);
+  });
+
+  const dataStore = backend && authMembership.restaurant_id ? createRestaurantDataStore({ client: backend, restaurantId: authMembership.restaurant_id, role: authRole, userId: user?.id, onError: showToast }) : null;
+  async function saveState() {
+    if (!dataStore) {
+      showToast("Changes cannot be saved because no authenticated restaurant data store is available.");
+      return false;
+    }
+    try {
+      await dataStore.save(state);
+      return true;
+    } catch (error) {
+      console.error("Could not save restaurant data.", error);
+      try {
+        const loaded = await dataStore.load();
+        state = loaded.state;
+        render();
+      } catch (reloadError) {
+        console.error("Could not restore restaurant data after a failed save.", reloadError);
+      }
+      showToast("Changes were not saved. The latest database data has been restored.");
+      return false;
+    }
+  }
+
+  async function deleteRecord(collection, table, id, successMessage) {
+    const row = state[collection].find((entry) => Number(entry.id) === Number(id));
+    if (!row) return;
+    if (!row.dbId) {
+      showToast("This record has not been synchronized with Supabase yet.");
+      return;
+    }
+    try {
+      await dataStore.remove(table, row.dbId);
+      state[collection] = state[collection].filter((entry) => Number(entry.id) !== Number(id));
+      render();
+      showToast(successMessage);
+    } catch (error) {
+      console.error(`Could not delete ${table} record.`, error);
+      showToast(`Could not delete this record: ${error.message}`);
+    }
+  }
 
   function lowStockItems() {
     return state.inventory.filter((item) => item.stock <= item.reorderAt);
@@ -118,49 +199,6 @@ export async function startDashboard({ user, profile, membership, role } = {}) {
     return entryMinutes(entry) / 60;
   }
 
-  function ensureEmployeeData() {
-    state.notifications ||= [];
-    state.timeEntries ||= [];
-    state.leaveRequests ||= [];
-    state.replacementRequests ||= [];
-    const today = localDateKey(new Date());
-    if (!state.timeEntries.length && state.team.length) {
-      state.team.forEach((person, index) => {
-        if (person.status === "On shift") {
-          const clockIn = new Date(Date.now() - (2.5 + index * 0.15) * 60 * 60 * 1000);
-          person.clockedInAt = clockIn.toISOString();
-          state.timeEntries.push({ id: `time-${person.id}-${today}`, employeeId: person.id, date: today, clockIn: clockIn.toISOString(), clockOut: null, breakMinutes: 0 });
-        } else {
-          const previous = new Date();
-          previous.setDate(previous.getDate() - 1);
-          const date = localDateKey(previous);
-          const start = dateAtTime(date, person.shiftStart || "15:00");
-          const paidHours = shiftLength(person);
-          const end = new Date(start.getTime() + (paidHours * 60 + Number(person.breakMinutes || 0)) * 60000);
-          state.timeEntries.push({ id: `time-${person.id}-${date}`, employeeId: person.id, date, clockIn: start.toISOString(), clockOut: end.toISOString(), breakMinutes: Number(person.breakMinutes || 0) });
-        }
-      });
-    } else {
-      state.team.forEach((person) => {
-        const openEntry = state.timeEntries.find((entry) => Number(entry.employeeId) === Number(person.id) && entry.date === today && !entry.clockOut);
-        if (openEntry) {
-          person.status = "On shift";
-          person.clockedInAt = openEntry.clockIn;
-        } else if (person.status === "On shift") {
-          person.clockedInAt ||= new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString();
-          state.timeEntries.push({ id: `time-${person.id}-${today}`, employeeId: person.id, date: today, clockIn: person.clockedInAt, clockOut: null, breakMinutes: 0 });
-        }
-      });
-    }
-    state.team.forEach((person) => {
-      person.shiftStart ||= "15:00";
-      person.shiftEnd ||= "23:00";
-      person.breakMinutes = Number(person.breakMinutes || 0);
-      person.station ||= "Unassigned";
-      person.initials ||= initials(person.name);
-    });
-  }
-
   function weekDate(dayIndex) {
     const today = new Date();
     const monday = new Date(today.getFullYear(), today.getMonth(), today.getDate() - ((today.getDay() + 6) % 7));
@@ -193,8 +231,7 @@ export async function startDashboard({ user, profile, membership, role } = {}) {
   }
 
   function renderHeader() {
-    const labels = { overview: "Overview", orders: "Orders", kitchen: "Kitchen", menu: "Menu", inventory: "Inventory", team: "Employees", reservations: "Reservations", accounting: "Accounting", complaints: "Complaints", reports: "Reports" };
-    document.getElementById("current-section").textContent = labels[view] || "Overview";
+    document.getElementById("current-section").textContent = view === "access-denied" ? "Access denied" : viewLabels[view] || "Overview";
     document.getElementById("today-label").textContent = `${new Intl.DateTimeFormat("en-US", { weekday: "short", month: "short", day: "numeric" }).format(new Date())} · ${timeNow()}`;
     document.getElementById("open-order-count").textContent = state.orders.filter((order) => !["Completed", "Cancelled"].includes(order.status)).length;
     const seenReservations = new Set(state.seenReservationIds || []);
@@ -207,6 +244,10 @@ export async function startDashboard({ user, profile, membership, role } = {}) {
 
   function render() {
     renderHeader();
+    if (dataError) {
+      app.innerHTML = `${pageHeading("DATA UNAVAILABLE", "Restaurant data unavailable", "We could not load the active restaurant data from Supabase.")}<section class="panel"><div class="empty-state"><strong>${esc(dataError)}</strong><p>Refresh the page after checking your connection or restaurant membership.</p></div></section>`;
+      return;
+    }
     const pages = {
       overview: renderOverview,
       orders: renderOrders,
@@ -217,7 +258,9 @@ export async function startDashboard({ user, profile, membership, role } = {}) {
       reservations: renderReservations,
       accounting: renderAccounting,
       complaints: renderComplaints,
-      reports: renderReports
+      reports: renderReports,
+      settings: renderSettings,
+      "access-denied": renderAccessDenied
     };
     app.innerHTML = (pages[view] || renderOverview)();
     app.querySelectorAll(".dish-art img").forEach((image) => {
@@ -228,6 +271,15 @@ export async function startDashboard({ user, profile, membership, role } = {}) {
     });
   }
 
+  function renderAccessDenied() {
+    const sectionName = viewLabels[deniedView] || "that section";
+    return `${pageHeading("ACCESS RESTRICTED", "You don’t have access to this section", `Your current restaurant role does not allow access to ${sectionName}.`)}<section class="panel"><div class="empty-state"><strong>Choose an available workspace section from the sidebar.</strong><p>If you need access to this area, ask a restaurant owner or manager.</p><button class="button button-primary" data-view="orders">Go to Orders</button></div></section>`;
+  }
+
+  function renderSettings() {
+    return `${pageHeading("RESTAURANT SETTINGS", "Settings", "Manage owner-only restaurant configuration.", `<span class="live-pill"><i></i> OWNER ONLY</span>`)}<section class="panel"><div class="panel-heading"><div><h2>Restaurant workspace</h2><p>These settings affect the active restaurant workspace.</p></div></div><form id="restaurant-settings-form" class="settings-form"><label class="form-field"><span>Restaurant name</span><input name="name" value="${esc(authRestaurant.name || "")}" required></label><label class="form-field"><span>Currency</span><input name="currency_code" value="${esc(authRestaurant.currency_code || "")}" required></label><label class="form-field"><span>Timezone</span><input name="timezone" value="${esc(authRestaurant.timezone || "")}" required></label><div class="heading-actions"><button class="button button-primary" type="submit">Save settings</button></div></form></section>`;
+  }
+
   function pageHeading(eyebrow, title, description, action = "") {
     return `<div class="page-heading"><div><div class="eyebrow">${eyebrow}</div><h1>${title}</h1><p>${description}</p></div>${action}</div>`;
   }
@@ -236,27 +288,28 @@ export async function startDashboard({ user, profile, membership, role } = {}) {
     const activeOrders = state.orders.filter((order) => !["Completed", "Cancelled"].includes(order.status));
     const alerts = lowStockItems();
     const liveOrders = state.orders.filter((order) => !["Completed", "Cancelled"].includes(order.status)).slice(0, 4);
-    const maxSales = Math.max(...seed.sales);
-    const bars = seed.sales.map((sale, index) => `<div class="chart-column"><span class="chart-value">${money(sale)}</span><div class="chart-bar ${index === 5 ? "highlight" : ""}" style="height:${Math.max(14, (sale / maxSales) * 100)}%"></div><span class="chart-label">${esc(seed.salesLabels[index])}</span></div>`).join("");
+    const salesByDay = Array.from({ length: 7 }, (_, index) => { const date = new Date(); date.setDate(date.getDate() - ((date.getDay() + 6) % 7) + index); const key = localDateKey(date); return { label: new Intl.DateTimeFormat("en-US", { weekday: "short" }).format(date), total: state.orders.filter((order) => order.date === key).reduce((sum, order) => sum + Number(order.total || 0), 0) }; });
+    const maxSales = Math.max(1, ...salesByDay.map((item) => item.total));
+    const bars = salesByDay.map((item, index) => `<div class="chart-column"><span class="chart-value">${money(item.total)}</span><div class="chart-bar ${index === salesByDay.length - 1 ? "highlight" : ""}" style="height:${Math.max(14, (item.total / maxSales) * 100)}%"></div><span class="chart-label">${esc(item.label)}</span></div>`).join("");
     const alertRows = alerts.slice(0, 4).map((item) => `<div class="alert-row"><span class="ingredient-icon">◈</span><span class="alert-name"><strong>${esc(item.name)}</strong><small>${esc(item.category)}</small></span><span class="alert-stock">${item.stock.toFixed(1)} ${esc(item.unit)}<small>Reorder at ${item.reorderAt} ${esc(item.unit)}</small></span></div>`).join("");
     const orderRows = liveOrders.map((order) => `<div class="live-order-row"><span class="order-number">#${order.id}</span><span class="live-order-info"><strong>${esc(order.customer)}</strong><small>${esc(order.type)} · ${itemCount(order)} items</small></span><span class="status-badge ${orderStatusClass(order.status)}">${esc(order.status)}</span><strong class="live-order-total">${money(order.total)}</strong></div>`).join("");
     const staffOnShift = state.team.filter((person) => person.status === "On shift").length;
     const currentCompletedSales = state.orders.filter((order) => order.status === "Completed").reduce((sum, order) => sum + Number(order.total), 0);
-    const todaySales = Math.max(0, 2840 + currentCompletedSales - baselineCompletedSales);
-    const newOrders = Math.max(0, state.orders.length - seed.orders.length);
-    const newCompletedOrders = Math.max(0, state.orders.filter((order) => order.status === "Completed").length - seed.orders.filter((order) => order.status === "Completed").length);
-    const averageCheck = (59.17 * 48 + currentCompletedSales - baselineCompletedSales) / (48 + newCompletedOrders);
+    const todaySales = currentCompletedSales;
+    const newOrders = state.orders.filter((order) => order.date === localDateKey(new Date())).length;
+    const newCompletedOrders = state.orders.filter((order) => order.date === localDateKey(new Date()) && order.status === "Completed").length;
+    const averageCheck = newCompletedOrders ? currentCompletedSales / newCompletedOrders : 0;
     const upcomingReservations = state.reservations.filter((booking) => booking.status === "Confirmed").length;
     return `
-      ${pageHeading(`<span class="live-dot"></span> ${new Intl.DateTimeFormat("en-US", { weekday: "long" }).format(new Date()).toUpperCase()} SERVICE · <span id="dashboard-clock">${timeNow()}</span>`, `${new Date().getHours() < 12 ? "Good morning" : new Date().getHours() < 17 ? "Good afternoon" : "Good evening"}, Alex <span class='wave'>✳</span>`, "Here’s what’s happening at Juniper Table today.", `<button class="button button-outline" data-action="export">↗ <span>Export report</span></button>`)}
+      ${pageHeading(`<span class="live-dot"></span> ${new Intl.DateTimeFormat("en-US", { weekday: "long" }).format(new Date()).toUpperCase()} SERVICE · <span id="dashboard-clock">${timeNow()}</span>`, `${new Date().getHours() < 12 ? "Good morning" : new Date().getHours() < 17 ? "Good afternoon" : "Good evening"}, Alex <span class='wave'>✳</span>`, `Here’s what’s happening at ${esc(authRestaurant.name || "your restaurant")} today.`, `<button class="button button-outline" data-action="export">↗ <span>Export report</span></button>`)}
       <section class="metrics-grid">
         <article class="metric-card"><div class="metric-top"><span>Today's sales</span><span class="metric-icon green">↗</span></div><strong class="metric-value">${money(todaySales)}<span class="metric-trend">↗ 12.8%</span></strong><div class="metric-foot">Live total · updates as orders close</div><div class="sparkline green-spark"><i style="height:25%"></i><i style="height:38%"></i><i style="height:33%"></i><i style="height:53%"></i><i style="height:48%"></i><i style="height:72%"></i><i style="height:66%"></i><i style="height:88%"></i></div></article>
-        <article class="metric-card"><div class="metric-top"><span>Orders today</span><span class="metric-icon blue">▤</span></div><strong class="metric-value">${48 + newOrders}<span class="metric-trend">↗ 8.2%</span></strong><div class="metric-foot"><span class="dot dot-blue"></span>${activeOrders.length} currently in progress</div><div class="metric-progress"><span style="width:${Math.min(100, Math.round((48 + newOrders) / 67 * 100))}%"></span></div><div class="metric-foot progress-label">${Math.min(100, Math.round((48 + newOrders) / 67 * 100))}% of daily order goal</div></article>
+        <article class="metric-card"><div class="metric-top"><span>Orders today</span><span class="metric-icon blue">▤</span></div><strong class="metric-value">${newOrders}</strong><div class="metric-foot"><span class="dot dot-blue"></span>${activeOrders.length} currently in progress</div><div class="metric-progress"><span style="width:${Math.min(100, Math.round(newOrders / 67 * 100))}%"></span></div><div class="metric-foot progress-label">${Math.min(100, Math.round(newOrders / 67 * 100))}% of daily order goal</div></article>
         <article class="metric-card"><div class="metric-top"><span>Average check</span><span class="metric-icon purple">$</span></div><strong class="metric-value">${money(averageCheck)}<span class="metric-trend">↗ 4.3%</span></strong><div class="metric-foot">Across completed orders today</div><div class="mini-bars purple-bars"><i style="height:38%"></i><i style="height:55%"></i><i style="height:48%"></i><i style="height:76%"></i><i style="height:63%"></i><i style="height:92%"></i><i style="height:79%"></i></div></article>
         <article class="metric-card"><div class="metric-top"><span>Team on shift</span><span class="metric-icon orange">♙</span></div><strong class="metric-value">${staffOnShift}<small> / ${state.team.length}</small></strong><div class="metric-foot"><span class="dot dot-green"></span>${state.team.length - staffOnShift} scheduled to join later</div><div class="avatar-stack">${state.team.filter((person) => person.status === "On shift").slice(0, 4).map((person) => `<span class="mini-avatar ${esc(person.color)}" title="${esc(person.name)}">${esc(person.initials)}</span>`).join("")}<span class="avatar-extra">+${Math.max(0, staffOnShift - 4)}</span></div></article>
       </section>
       <section class="overview-grid">
-        <article class="panel sales-panel"><div class="panel-heading"><div><h2>Sales overview</h2><p>Weekly performance at a glance</p></div><select class="select-small" aria-label="Sales period"><option>This week</option><option>This month</option></select></div><div class="sales-summary"><strong>$16,010</strong><span class="metric-trend">↗ 9.4% <span class="muted">vs. last week</span></span></div><div class="bar-chart">${bars}</div></article>
+        <article class="panel sales-panel"><div class="panel-heading"><div><h2>Sales overview</h2><p>Weekly performance at a glance</p></div><select class="select-small" aria-label="Sales period"><option>This week</option><option>This month</option></select></div><div class="sales-summary"><strong>${money(salesByDay.reduce((sum, item) => sum + item.total, 0))}</strong><span class="muted">From recorded orders</span></div><div class="bar-chart">${bars}</div></article>
         <article class="panel"><div class="panel-heading"><div><h2>Inventory alerts</h2><p>${alerts.length} ingredients need attention</p></div><button class="text-button" data-view="inventory">View inventory <span>→</span></button></div><div class="alert-list">${alertRows || `<div class="empty-state compact">All ingredients are well stocked.</div>`}</div><button class="button button-soft full-button" data-view="inventory">Manage inventory <span>→</span></button></article>
         <article class="panel orders-panel"><div class="panel-heading"><div><h2>Live orders</h2><p>Keep service moving</p></div><button class="text-button" data-view="orders">All orders <span>→</span></button></div><div class="live-orders">${orderRows || `<div class="empty-state compact">No open orders right now.</div>`}</div></article>
         <article class="panel service-panel"><div class="panel-heading"><div><h2>Service snapshot</h2><p>Tonight at a glance</p></div><span class="live-pill"><i></i> LIVE</span></div><div class="snapshot-stats"><div><span>Reservations</span><strong>${upcomingReservations}<small> bookings</small></strong></div><div><span>Tables occupied</span><strong>${Math.min(14, state.orders.filter((order) => order.type === "Dine in" && !["Completed", "Cancelled"].includes(order.status)).length + 6)}<small> / 14</small></strong></div><div><span>Avg. wait time</span><strong>${Math.max(5, 12 + activeOrders.length - 3)}<small> min</small></strong></div></div><div class="snapshot-footer"><span class="service-icon">✦</span><span><strong>Looking good!</strong><small>${activeOrders.length} active tickets · ${state.reservations.length} bookings on the books</small></span></div></article>
@@ -300,13 +353,14 @@ export async function startDashboard({ user, profile, membership, role } = {}) {
   }
 
   function renderMenu() {
+    const canManageMenu = authRole !== "staff_shared";
     const categories = ["All", ...new Set(state.menu.map((item) => item.category))];
     const matching = state.menu.filter((item) => (menuFilter === "All" || item.category === menuFilter) && item.name.toLowerCase().includes(menuSearch.toLowerCase()));
     const cards = matching.map((item) => {
       const image = safeImage(item.image);
-      return `<article class="menu-card"><div class="dish-art dish-${item.id % 6} ${image ? "has-photo" : ""}">${image ? `<img src="${esc(image)}" alt="${esc(item.name)}" loading="lazy">` : ""}<span>${esc(item.category)}</span><button class="dish-menu" aria-label="Edit ${esc(item.name)}" data-action="edit-menu" data-id="${item.id}">···</button><span class="dish-symbol">${({ Mains: "✳", Starters: "◉", Sides: "✦", Desserts: "❋", Drinks: "◌" })[item.category] || "✳"}</span></div><div class="menu-card-content"><div class="menu-card-heading"><h3>${esc(item.name)}</h3><strong>${money(item.price)}</strong></div><p>${esc(item.description)}</p><div class="menu-card-footer"><span class="category-pill">${esc(item.category)}</span>${item.popular ? `<span class="popular-label">★ Popular</span>` : `<span class="recipe-label">${(item.recipe || []).length} recipe ingredients</span>`}</div><div class="menu-card-actions"><button class="text-button" data-action="edit-menu" data-id="${item.id}">Edit item</button><button class="text-button danger-text" data-action="delete-menu" data-id="${item.id}">Remove</button></div></div></article>`;
+      return `<article class="menu-card"><div class="dish-art dish-${item.id % 6} ${image ? "has-photo" : ""}">${image ? `<img src="${esc(image)}" alt="${esc(item.name)}" loading="lazy">` : ""}<span>${esc(item.category)}</span>${canManageMenu ? `<button class="dish-menu" aria-label="Edit ${esc(item.name)}" data-action="edit-menu" data-id="${item.id}">···</button>` : ""}<span class="dish-symbol">${({ Mains: "✳", Starters: "◉", Sides: "✦", Desserts: "❋", Drinks: "◌" })[item.category] || "✳"}</span></div><div class="menu-card-content"><div class="menu-card-heading"><h3>${esc(item.name)}</h3><strong>${money(item.price)}</strong></div><p>${esc(item.description)}</p><div class="menu-card-footer"><span class="category-pill">${esc(item.category)}</span>${item.popular ? `<span class="popular-label">★ Popular</span>` : `<span class="recipe-label">${(item.recipe || []).length} recipe ingredients</span>`}</div>${canManageMenu ? `<div class="menu-card-actions"><button class="text-button" data-action="edit-menu" data-id="${item.id}">Edit item</button><button class="text-button danger-text" data-action="delete-menu" data-id="${item.id}">Remove</button></div>` : ""}</div></article>`;
     }).join("");
-    return `${pageHeading("WHAT'S COOKING", "Menu", "Manage dishes, pricing, and the ingredients behind every plate.", `<button class="button button-primary" data-action="add-menu">＋ Add menu item</button>`)}
+    return `${pageHeading("WHAT'S COOKING", "Menu", canManageMenu ? "Manage dishes, pricing, and the ingredients behind every plate." : "View menu items and categories, then add them to an order.", canManageMenu ? `<button class="button button-primary" data-action="add-menu">＋ Add menu item</button>` : "")}
       <div class="menu-toolbar"><div class="filter-tabs">${categories.map((category) => `<button class="filter-tab ${menuFilter === category ? "active" : ""}" data-action="menu-filter" data-filter="${esc(category)}">${esc(category)}</button>`).join("")}</div><label class="search-field"><span>⌕</span><input id="menu-search" type="search" placeholder="Search menu..." value="${esc(menuSearch)}"></label></div>
       ${matching.length ? `<div class="menu-grid">${cards}</div>` : `<div class="panel empty-state">No menu items match your search.</div>`}`;
   }
@@ -526,11 +580,12 @@ export async function startDashboard({ user, profile, membership, role } = {}) {
 
   function renderComplaints() {
     state.complaints ||= [];
+    const canResolveComplaints = authRole !== "staff_shared";
     const filtered = state.complaints.filter((complaint) => (complaintStatusFilter === "All statuses" || complaint.status === complaintStatusFilter) && (complaintSeverityFilter === "All priorities" || complaint.severity === complaintSeverityFilter));
     const openCount = state.complaints.filter((item) => item.status !== "Resolved").length;
     const rows = filtered.slice().sort((a, b) => b.date.localeCompare(a.date)).map((complaint) => {
       const person = state.team.find((employee) => Number(employee.id) === Number(complaint.employeeId));
-      return `<tr><td>${formatDateLabel(complaint.date)}<small class="table-subline">${esc(complaint.submittedAt || "")}</small></td><td><strong>${esc(person?.name || "Former employee")}</strong><small class="table-subline">${esc(person?.role || "")}</small></td><td><span class="category-pill">${esc(complaint.category)}</span></td><td><strong>${esc(complaint.subject)}</strong><small class="table-subline complaint-details">${esc(complaint.details)}</small></td><td><span class="status-badge ${complaint.severity === "High" ? "low-stock" : complaint.severity === "Medium" ? "preparing" : "in-stock"}">${esc(complaint.severity)}</span></td><td><span class="status-badge ${orderStatusClass(complaint.status)}">${esc(complaint.status)}</span></td><td>${complaint.status !== "Resolved" ? `<button class="button button-small button-soft" data-action="resolve-complaint" data-id="${complaint.id}">Resolve</button>` : "—"}</td></tr>`;
+      return `<tr><td>${formatDateLabel(complaint.date)}<small class="table-subline">${esc(complaint.submittedAt || "")}</small></td><td><strong>${esc(person?.name || "Former employee")}</strong><small class="table-subline">${esc(person?.role || "")}</small></td><td><span class="category-pill">${esc(complaint.category)}</span></td><td><strong>${esc(complaint.subject)}</strong><small class="table-subline complaint-details">${esc(complaint.details)}</small></td><td><span class="status-badge ${complaint.severity === "High" ? "low-stock" : complaint.severity === "Medium" ? "preparing" : "in-stock"}">${esc(complaint.severity)}</span></td><td><span class="status-badge ${orderStatusClass(complaint.status)}">${esc(complaint.status)}</span></td><td>${canResolveComplaints && complaint.status !== "Resolved" ? `<button class="button button-small button-soft" data-action="resolve-complaint" data-id="${complaint.id}">Resolve</button>` : "—"}</td></tr>`;
     }).join("");
     return `${pageHeading("PEOPLE &amp; WORKPLACE", "Employee complaints", "A private register for workplace concerns, safety issues, and employee feedback.", `<div class="heading-actions"><button class="button button-outline" data-action="print-page">▤ Print list</button><button class="button button-primary" data-action="add-complaint">＋ Log complaint</button></div>`)}
       <section class="accounting-metrics complaint-metrics"><article><span>Total complaints</span><strong>${state.complaints.length}</strong><small>Demo register</small></article><article><span>Open / in review</span><strong>${openCount}</strong><small>Require follow-up</small></article><article><span>High priority</span><strong>${state.complaints.filter((item) => item.severity === "High" && item.status !== "Resolved").length}</strong><small>Safety or urgent concerns</small></article><article><span>Resolved</span><strong>${state.complaints.filter((item) => item.status === "Resolved").length}</strong><small>Closed cases</small></article></section>
@@ -581,7 +636,8 @@ export async function startDashboard({ user, profile, membership, role } = {}) {
 
   function openNewOrder() {
     const rows = state.menu.map((item) => `<label class="order-menu-item"><span class="order-item-info"><strong>${esc(item.name)}</strong><small>${money(item.price)} · ${esc(item.category)}</small></span><input type="number" name="qty_${item.id}" min="0" max="99" value="0" aria-label="Quantity of ${esc(item.name)}"></label>`).join("");
-    openModal("Start a new order", `<form id="new-order-form"><div class="form-grid">${field("Order type", "type", "Dine in", "text", true, "list=\"order-types\"")}<datalist id="order-types"><option>Dine in</option><option>Takeaway</option><option>Delivery</option></datalist>${field("Customer name", "customer", "", "text", true)}<div class="form-field"><span>Table</span><select name="table"><option>—</option>${Array.from({ length: 14 }, (_, index) => `<option>Table ${String(index + 1).padStart(2, "0")}</option>`).join("")}</select></div></div><div class="modal-section-heading"><div><h3>Add items</h3><p>Enter a quantity for each item.</p></div><span>${state.menu.length} items</span></div><div class="order-menu-list">${rows || `<div class="empty-state compact">Add menu items before creating an order.</div>`}</div><div class="modal-footer"><button type="button" class="button button-outline" data-action="close-modal">Cancel</button><button type="submit" class="button button-primary">Create order</button></div></form>`, "modal-wide");
+    const tableOptions = (state.diningTables || []).map((table) => `<option>Table ${String(table.tableNumber ?? table.number).padStart(2, "0")}</option>`).join("");
+    openModal("Start a new order", `<form id="new-order-form"><div class="form-grid">${field("Order type", "type", "Dine in", "text", true, "list=\"order-types\"")}<datalist id="order-types"><option>Dine in</option><option>Takeaway</option><option>Delivery</option></datalist>${field("Customer name", "customer", "", "text", true)}<div class="form-field"><span>Table</span><select name="table"><option>—</option>${tableOptions}</select></div></div><div class="modal-section-heading"><div><h3>Add items</h3><p>Enter a quantity for each item.</p></div><span>${state.menu.length} items</span></div><div class="order-menu-list">${rows || `<div class="empty-state compact">Add menu items before creating an order.</div>`}</div><div class="modal-footer"><button type="button" class="button button-outline" data-action="close-modal">Cancel</button><button type="submit" class="button button-primary">Create order</button></div></form>`, "modal-wide");
   }
 
   function openMenuForm(item = null) {
@@ -610,7 +666,8 @@ export async function startDashboard({ user, profile, membership, role } = {}) {
   }
 
   function openReservationForm() {
-    openModal("New reservation", `<form id="reservation-form"><div class="form-grid">${field("Guest name", "name", "", "text", true)}${field("Phone number", "phone", "", "tel", true)}${field("Time", "time", "6:00 PM", "text", true)}<label class="form-field"><span>Party size</span><select name="guests">${Array.from({ length: 12 }, (_, i) => `<option value="${i + 1}" ${i === 1 ? "selected" : ""}>${i + 1} ${i === 0 ? "guest" : "guests"}</option>`).join("")}</select></label><label class="form-field"><span>Table</span><select name="table"><option>To be assigned</option>${Array.from({ length: 14 }, (_, index) => `<option>Table ${String(index + 1).padStart(2, "0")}</option>`).join("")}</select></label></div><div class="modal-footer"><button type="button" class="button button-outline" data-action="close-modal">Cancel</button><button type="submit" class="button button-primary">Add reservation</button></div></form>`);
+    const tableOptions = (state.diningTables || []).map((table) => `<option>Table ${String(table.tableNumber ?? table.number).padStart(2, "0")}</option>`).join("");
+    openModal("New reservation", `<form id="reservation-form"><div class="form-grid">${field("Guest name", "name", "", "text", true)}${field("Phone number", "phone", "", "tel", true)}${field("Time", "time", "6:00 PM", "text", true)}<label class="form-field"><span>Party size</span><select name="guests">${Array.from({ length: 12 }, (_, i) => `<option value="${i + 1}" ${i === 1 ? "selected" : ""}>${i + 1} ${i === 0 ? "guest" : "guests"}</option>`).join("")}</select></label><label class="form-field"><span>Table</span><select name="table"><option>To be assigned</option>${tableOptions}</select></label></div><div class="modal-footer"><button type="button" class="button button-outline" data-action="close-modal">Cancel</button><button type="submit" class="button button-primary">Add reservation</button></div></form>`);
   }
 
   function openTimeEntryForm(entry = null) {
@@ -702,9 +759,20 @@ export async function startDashboard({ user, profile, membership, role } = {}) {
       const menuItem = findMenuItem(line.menuId);
       (menuItem?.recipe || []).forEach((ingredient) => {
         const stockItem = state.inventory.find((entry) => Number(entry.id) === Number(ingredient.ingredientId));
-        if (stockItem) stockItem.stock = Math.max(0, Number((stockItem.stock + direction * ingredient.quantity * line.quantity).toFixed(3)));
+        if (stockItem) {
+          const quantity = Number((ingredient.quantity * line.quantity).toFixed(3));
+          stockItem.stock = Math.max(0, Number((stockItem.stock + direction * quantity).toFixed(3)));
+          state.inventoryMovements ||= [];
+          state.inventoryMovements.unshift({ id: `movement-${stockItem.id}-${Date.now()}`, inventory_item_id: stockItem.dbId, inventoryItemId: stockItem.id, movement_type: direction < 0 ? "usage" : "adjustment", quantity, notes: `Order #${order.orderNumber || order.id}` });
+        }
       });
     });
+  }
+
+  function recordPayment(order) {
+    state.payments ||= [];
+    if (state.payments.some((payment) => payment.order_id === order.dbId || Number(payment.orderId) === Number(order.id))) return;
+    state.payments.push({ id: `payment-${order.id}-${Date.now()}`, order_id: order.dbId, orderId: order.id, amount: Number(order.total || 0), payment_method: "Recorded in dashboard", payment_status: "completed", created_at: new Date().toISOString() });
   }
 
   function createOrder(form) {
@@ -745,8 +813,7 @@ export async function startDashboard({ user, profile, membership, role } = {}) {
     addNotification("order", "New order sent to kitchen", `Order #${order.id} · ${order.customer} · ${money(order.total)}`);
     saveState();
     closeModal();
-    view = "orders";
-    render();
+    navigateTo("orders");
     showToast(`Order #${order.id} sent to the kitchen.`);
   }
 
@@ -833,20 +900,28 @@ export async function startDashboard({ user, profile, membership, role } = {}) {
     if (target.dataset.view) {
       event.preventDefault();
       closeModal();
-      view = target.dataset.view;
-      render();
+      navigateTo(target.dataset.view);
       return;
     }
     const { action, id } = target.dataset;
     if (action === "close-modal") closeModal();
     else if (action === "new-order") openNewOrder();
-    else if (action === "add-menu") openMenuForm();
-    else if (action === "edit-menu") openMenuForm(findMenuItem(id));
+    else if (action === "add-menu") {
+      if (authRole === "staff_shared") showToast("Staff accounts can view the menu and add items to orders, but cannot edit menu items.");
+      else openMenuForm();
+    }
+    else if (action === "edit-menu") {
+      if (authRole === "staff_shared") showToast("Staff accounts cannot edit menu items.");
+      else openMenuForm(findMenuItem(id));
+    }
     else if (action === "delete-menu") {
+      if (authRole === "staff_shared") {
+        showToast("Staff accounts cannot remove menu items.");
+        return;
+      }
       const item = findMenuItem(id);
       if (item && window.confirm(`Remove "${item.name}" from the menu?`)) {
-        state.menu = state.menu.filter((entry) => Number(entry.id) !== Number(id));
-        saveState(); render(); showToast("Menu item removed.");
+        deleteRecord("menu", "menu_items", id, "Menu item removed.");
       }
     } else if (action === "menu-filter") {
       menuFilter = target.dataset.filter; render();
@@ -870,7 +945,7 @@ export async function startDashboard({ user, profile, membership, role } = {}) {
         if (order.status === "Completed") order.payment = "Paid";
         else {
           order.status = order.status === "Preparing" ? "Cooking" : order.status === "Cooking" ? "Ready" : "Completed";
-          if (order.status === "Completed") order.payment = "Paid";
+          if (order.status === "Completed") { order.payment = "Paid"; recordPayment(order); }
         }
         saveState(); render(); showToast(`Order #${order.id} moved to ${order.status.toLowerCase()}.`);
       }
@@ -889,6 +964,7 @@ export async function startDashboard({ user, profile, membership, role } = {}) {
       if (order && order.payment !== "Paid") {
         order.payment = "Paid";
         order.paidDate = localDateKey(new Date());
+        recordPayment(order);
         saveState(); render(); showToast(`Payment for order #${order.id} recorded.`);
       }
     } else if (action === "pay-wage") {
@@ -907,6 +983,10 @@ export async function startDashboard({ user, profile, membership, role } = {}) {
     } else if (action === "add-complaint") {
       openComplaintForm();
     } else if (action === "resolve-complaint") {
+      if (authRole === "staff_shared") {
+        showToast("Staff accounts can submit and view complaints, but cannot resolve them.");
+        return;
+      }
       const complaint = state.complaints.find((item) => Number(item.id) === Number(id));
       if (complaint) {
         complaint.status = "Resolved";
@@ -919,7 +999,7 @@ export async function startDashboard({ user, profile, membership, role } = {}) {
       const order = state.orders.find((entry) => Number(entry.id) === Number(id));
       if (order) {
         order.status = order.status === "Preparing" ? "Cooking" : order.status === "Cooking" ? "Ready" : "Completed";
-        if (order.status === "Completed") order.payment = "Paid";
+        if (order.status === "Completed") { order.payment = "Paid"; recordPayment(order); }
         saveState(); render(); showToast(`Order #${order.id} marked ${order.status.toLowerCase()}.`);
       }
     } else if (action === "order-menu") {
@@ -952,8 +1032,7 @@ export async function startDashboard({ user, profile, membership, role } = {}) {
     } else if (action === "delete-employee") {
       const person = state.team.find((entry) => Number(entry.id) === Number(id));
       if (person && window.confirm(`Remove ${person.name} from the employee directory? Their existing timesheets and requests will be kept.`)) {
-        state.team = state.team.filter((employee) => Number(employee.id) !== Number(id));
-        saveState(); closeModal(); render(); showToast(`${person.name} removed from the active employee directory.`);
+        deleteRecord("team", "employees", id, `${person.name} removed from the active employee directory.`).then(() => closeModal());
       }
     } else if (action === "toggle-team") {
       const person = state.team.find((entry) => Number(entry.id) === Number(id));
@@ -976,8 +1055,7 @@ export async function startDashboard({ user, profile, membership, role } = {}) {
     } else if (action === "delete-reservation") {
       const booking = state.reservations.find((entry) => Number(entry.id) === Number(id));
       if (booking && window.confirm(`Cancel the reservation for ${booking.name}?`)) {
-        state.reservations = state.reservations.filter((entry) => Number(entry.id) !== Number(id));
-        saveState(); render(); showToast("Reservation cancelled.");
+        deleteRecord("reservations", "reservations", id, "Reservation cancelled.");
       }
     } else if (action === "export") exportData();
     else if (action === "export-orders") exportOrders();
@@ -993,10 +1071,10 @@ export async function startDashboard({ user, profile, membership, role } = {}) {
       saveState(); renderHeader();
       openModal("Notifications", `<div class="notification-list"><h3 class="notification-section-title">Reservations</h3>${reservationRows || `<div class="empty-state compact">No upcoming confirmed reservations.</div>`}<h3 class="notification-section-title">Recent activity</h3>${eventRows || `<div class="empty-state compact">No recent activity.</div>`}${alerts.length ? `<h3 class="notification-section-title">Inventory alerts</h3>${alerts.map((item) => `<div class="alert-row"><span class="ingredient-icon">!</span><span class="alert-name"><strong>${esc(item.name)} is running low</strong><small>${item.stock} ${esc(item.unit)} left · reorder at ${item.reorderAt} ${esc(item.unit)}</small></span></div>`).join("")}` : ""}</div><div class="modal-footer"><button class="button button-outline" data-action="close-modal">Close</button><button class="button button-primary" data-view="reservations">View reservations</button></div>`, "modal-wide");
     } else if (action === "profile") {
-      openModal("Your workspace", `<div class="profile-modal"><span class="profile-avatar large">AM</span><h3>Alex Morgan</h3><p>Restaurant manager · Juniper Table</p><div class="profile-modal-actions"><button class="button button-outline" data-action="export">Export data backup</button><button class="button button-danger" data-action="reset-demo">Reset to demo data</button></div></div>`);
+      openModal("Your workspace", `<div class="profile-modal"><span class="profile-avatar large">${esc(initials(authProfile.full_name || user?.email || "User"))}</span><h3>${esc(authProfile.full_name || user?.email || "Restaurant user")}</h3><p>${esc(authRole.replace("_", " "))} · ${esc(authRestaurant.name || "Active restaurant")}</p><div class="profile-modal-actions"><button class="button button-outline" data-action="export">Export data backup</button></div></div>`);
     } else if (action === "reset-demo") {
-      if (window.confirm("Reset this browser to the original Juniper Table demo data? This removes your local changes.")) {
-        state = clone(seed); ensureEmployeeData(); saveState(); closeModal(); render(); showToast("Demo data restored.");
+      if (window.confirm("Resetting demo data is disabled because Supabase is the source of truth.")) {
+        showToast("Demo reset is disabled because Supabase is the source of truth.");
       }
     }
   });
@@ -1075,7 +1153,36 @@ export async function startDashboard({ user, profile, membership, role } = {}) {
     event.preventDefault();
     const form = event.target;
     const data = new FormData(form);
-    if (form.id === "new-order-form") createOrder(form);
+    if (form.id === "restaurant-settings-form") {
+      if (authRole !== "owner") {
+        showToast("Only the restaurant owner can change restaurant settings.");
+        return;
+      }
+      const updates = { name: String(data.get("name")).trim(), currency_code: String(data.get("currency_code")).trim(), timezone: String(data.get("timezone")).trim() };
+      if (!updates.name || !updates.currency_code || !updates.timezone) {
+        showToast("Complete all restaurant settings before saving.");
+        return;
+      }
+      if (!backend) {
+        showToast("Restaurant settings could not be saved because Supabase is not configured.");
+        return;
+      }
+      const submit = form.querySelector("button[type=submit]");
+      submit.disabled = true;
+      try {
+        const { error } = await backend.from("restaurants").update(updates).eq("id", authMembership.restaurant_id);
+        if (error) throw error;
+        Object.assign(authRestaurant, updates);
+        applyIdentity();
+        render();
+        showToast("Restaurant settings saved.");
+      } catch (error) {
+        console.error("Could not save restaurant settings.", error);
+        showToast("Restaurant settings could not be saved. Check your permissions and try again.");
+      } finally {
+        submit.disabled = false;
+      }
+    } else if (form.id === "new-order-form") createOrder(form);
     else if (form.id === "menu-form") {
       const id = Number(form.dataset.id);
       const existing = state.menu.find((item) => item.id === id);
@@ -1105,6 +1212,8 @@ export async function startDashboard({ user, profile, membership, role } = {}) {
         return;
       }
       item.stock = Number((item.stock + (data.get("kind") === "add" ? quantity : -quantity)).toFixed(3));
+      state.inventoryMovements ||= [];
+      state.inventoryMovements.unshift({ id: `movement-${item.id}-${Date.now()}`, inventory_item_id: item.dbId, inventoryItemId: item.id, movement_type: data.get("kind") === "add" ? "purchase" : "adjustment", quantity, notes: "Manual stock adjustment" });
       saveState(); closeModal(); render(); showToast(`${item.name} stock updated.`);
     } else if (form.id === "team-form") {
       const id = Number(form.dataset.id);
@@ -1228,18 +1337,20 @@ export async function startDashboard({ user, profile, membership, role } = {}) {
   });
 
   applyIdentity();
-  loadState();
-  if (backend) {
+  configureNavigation();
+  if (dataStore) {
     try {
-      const remoteState = await storage.loadRemote();
-      if (remoteState) state = remoteState;
+      const loaded = await dataStore.load();
+      state = loaded.state;
+      if (loaded.report.warnings.length) loaded.report.warnings.forEach((warning) => console.warn(warning));
     } catch (error) {
+      dataError = error.message;
       console.error("Could not load restaurant data from Supabase.", error);
-      showToast("Supabase is configured, but the restaurant_state table is not ready yet.");
+      showToast("Restaurant data could not be loaded. Please try again.");
     }
+  } else {
+    dataError = "No authenticated restaurant context is available.";
   }
-  ensureEmployeeData();
-  baselineCompletedSales = seed.orders.filter((order) => order.status === "Completed").reduce((sum, order) => sum + Number(order.total), 0);
   render();
   updateLiveClock();
   window.setInterval(updateLiveClock, 1000);

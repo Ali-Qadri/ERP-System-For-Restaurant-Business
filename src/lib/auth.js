@@ -27,6 +27,16 @@ async function getMembership(user) {
   return data;
 }
 
+async function getRestaurant(membership) {
+  const { data, error } = await requireSupabase()
+    .from("restaurants")
+    .select("name, currency_code, timezone")
+    .eq("id", membership.restaurant_id)
+    .maybeSingle();
+  if (error) throw new Error("Your restaurant details could not be loaded.");
+  return data;
+}
+
 async function isPlatformAdmin(user) {
   const { data, error } = await requireSupabase()
     .from("platform_admins")
@@ -50,9 +60,17 @@ export async function getAuthContext(session) {
     };
   }
   const [profile, membership] = await Promise.all([getProfile(session.user), getMembership(session.user)]);
+  let restaurant = null;
+  let restaurantError = null;
+  try {
+    restaurant = await getRestaurant(membership);
+  } catch (error) {
+    restaurantError = error.message;
+    console.error("Could not load the active restaurant details.", error);
+  }
   const candidateRole = membership.role || profile.role || session.user.user_metadata?.role;
   const role = SUPPORTED_ROLES.has(candidateRole) ? candidateRole : "staff_shared";
-  return { session, user: session.user, profile, membership, role, accountType: "restaurant" };
+  return { session, user: session.user, profile, membership, restaurant, restaurantError, role, accountType: "restaurant" };
 }
 
 export async function signIn(email, password) {
