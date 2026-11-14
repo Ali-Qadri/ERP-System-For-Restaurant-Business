@@ -2,7 +2,7 @@ import { serve } from "https://deno.land/std@0.224.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 
 const allowedRoles = new Set(["owner", "manager", "staff_shared"]);
-const geminiModel = "gemini-3.8-flash";
+const geminiModel = "gemini-3.5-flash-lite";
 const maxMessages = 12;
 const maxMessageLength = 2000;
 const maxConversationLength = 12000;
@@ -141,7 +141,11 @@ serve(async (request) => {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), geminiTimeoutMs);
     const requestStartedAt = Date.now();
-    console.info("ERP Assistant Gemini request started.", { model: geminiModel, messageCount: contents.length });
+    console.info("ERP Assistant Gemini request started.", {
+      model: geminiModel,
+      requestStartedAt: new Date(requestStartedAt).toISOString(),
+      messageCount: contents.length
+    });
     let geminiResponse: Response;
     try {
       geminiResponse = await fetch(geminiUrl, {
