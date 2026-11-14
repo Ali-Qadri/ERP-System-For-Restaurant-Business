@@ -169,6 +169,14 @@ function normalizeName(value: string) {
   return value.trim().toLocaleLowerCase();
 }
 
+function tableNumberCandidates(value: string) {
+  const reference = value.trim();
+  const match = reference.match(/^(?:table\s*)?0*(\d+)$/i);
+  if (!match) return [reference];
+  const number = String(Number(match[1]));
+  return [...new Set([`Table ${number.padStart(2, "0")}`, `Table ${number}`])];
+}
+
 function base64UrlEncode(value: string) {
   return btoa(value).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
 }
@@ -241,7 +249,7 @@ async function prepareWrite(client: ReturnType<typeof createClient>, restaurantI
     let diningTableId: string | null = null;
     let resolvedTable = "To be assigned";
     if (tableNumber) {
-      const { data: tables, error } = await client.from("dining_tables").select("id, table_number").eq("restaurant_id", restaurantId).eq("table_number", tableNumber).limit(1);
+      const { data: tables, error } = await client.from("dining_tables").select("id, table_number").eq("restaurant_id", restaurantId).in("table_number", tableNumberCandidates(tableNumber)).limit(1);
       if (error) return databaseFailure("dining_tables", error);
       if (!tables?.[0]) return { status: "needs_information", message: "I could not find that dining table in this restaurant. Please provide an existing table number or leave the table unassigned." };
       diningTableId = tables[0].id;
@@ -280,7 +288,7 @@ async function prepareWrite(client: ReturnType<typeof createClient>, restaurantI
     let diningTableId: string | null = null;
     let resolvedTable = "No table assigned";
     if (tableNumber) {
-      const { data: tables, error } = await client.from("dining_tables").select("id, table_number").eq("restaurant_id", restaurantId).eq("table_number", tableNumber).limit(1);
+      const { data: tables, error } = await client.from("dining_tables").select("id, table_number").eq("restaurant_id", restaurantId).in("table_number", tableNumberCandidates(tableNumber)).limit(1);
       if (error) return databaseFailure("dining_tables", error);
       if (!tables?.[0]) return { status: "needs_information", message: "I could not find that dining table in this restaurant." };
       diningTableId = tables[0].id;
