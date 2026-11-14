@@ -2,12 +2,13 @@ import { serve } from "https://deno.land/std@0.224.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 
 const allowedRoles = new Set(["owner", "manager", "staff_shared"]);
-const maxMessages = 20;
-const maxMessageLength = 4000;
-const maxConversationLength = 24000;
+const geminiModel = "gemini-3.8-flash";
+const maxMessages = 12;
+const maxMessageLength = 2000;
+const maxConversationLength = 12000;
+const maxRequestBodyLength = 14000;
+const geminiTimeoutMs = 20000;
 const corsOrigin = Deno.env.get("APP_URL")?.trim() || "*";
-let cachedModelName = "";
-let cachedModelExpiresAt = 0;
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": corsOrigin,
@@ -47,40 +48,9 @@ async function readGoogleResponse(response: Response) {
   }
 }
 
-async function discoverGenerateContentModel(apiKey: string) {
-  if (cachedModelName && cachedModelExpiresAt > Date.now()) return cachedModelName;
-
-  const response = await fetch("https://generativelanguage.googleapis.com/v1beta/models", {
-    headers: { "x-goog-api-key": apiKey }
-  });
-  const result = await readGoogleResponse(response);
-  if (!response.ok) {
-    console.error("Gemini models.list request failed.", {
-      status: response.status,
-      statusText: response.statusText,
-      googleError: sanitizeGoogleError(result)
-    });
-    throw new Error("Gemini models could not be discovered.");
-  }
-
-  const models = Array.isArray(result.models)
-    ? result.models.filter((model: { name?: unknown; supportedGenerationMethods?: unknown }) =>
-      typeof model.name === "string" && Array.isArray(model.supportedGenerationMethods) && model.supportedGenerationMethods.includes("generateContent"))
-    : [];
-  const modelNames = models.map((model: { name: string }) => model.name.replace(/^models\//, ""));
-  const preferredNames = ["gemini-3.8-flash", "gemini-3.5-flash", "gemini-2.5-flash", "gemini-2.0-flash", "gemini-1.5-flash"];
-  const selectedModel = preferredNames.find((name) => modelNames.includes(name)) || modelNames.find((name) => /flash/i.test(name)) || modelNames[0];
-  if (!selectedModel) throw new Error("No Gemini model supporting generateContent is available.");
-
-  cachedModelName = selectedModel;
-  cachedModelExpiresAt = Date.now() + 5 * 60 * 1000;
-  console.info("Gemini generateContent model selected.", { model: selectedModel });
-  return selectedModel;
-}
-
 function validateMessages(value: unknown) {
   if (!Array.isArray(value) || value.length === 0 || value.length > maxMessages) {
-    return "Send between 1 and 20 conversation messages.";
+    return `Send between 1 and ${maxMessages} conversation messages.`;
   }
   let totalLength = 0;
   for (const message of value) {
@@ -112,6 +82,7 @@ Politely redirect unrelated questions by saying you can help with the ERP topics
 serve(async (request) => {
   if (request.method === "OPTIONS") return new Response("ok", { headers: corsHeaders });
   if (request.method !== "POST") return json({ error: "Only POST requests are supported." }, 405);
+  console.info("ERP Assistant request received.");
 
   const authorization = request.headers.get("Authorization");
   if (!authorization?.startsWith("Bearer ")) return json({ error: "Authentication is required." }, 401);
@@ -123,7 +94,9 @@ serve(async (request) => {
 
   let input: { messages?: unknown };
   try {
-    input = await request.json();
+    const requestBody = await request.text();
+    if (requestBody.length > maxRequestBodyLength) return json({ error: "The assistant request is too large." }, 413);
+    input = JSON.parse(requestBody);
   } catch {
     return json({ error: "Request body must be valid JSON." }, 400);
   }
@@ -137,6 +110,7 @@ serve(async (request) => {
   });
   const { data: userData, error: userError } = await userClient.auth.getUser(accessToken);
   if (userError || !userData.user) return json({ error: "Your session is invalid or expired." }, 401);
+  console.info("ERP Assistant JWT verified.");
 
   const { data: membership, error: membershipError } = await userClient
     .from("restaurant_members")
@@ -147,6 +121,7 @@ serve(async (request) => {
     .maybeSingle();
   if (membershipError) return json({ error: "Your restaurant membership could not be verified." }, 500);
   if (!membership || !allowedRoles.has(membership.role)) return json({ error: "You do not have an active restaurant role for the assistant." }, 403);
+  console.info("ERP Assistant restaurant membership verified.");
 
   const { data: restaurant, error: restaurantError } = await userClient
     .from("restaurants")
@@ -161,23 +136,33 @@ serve(async (request) => {
   }));
 
   try {
-    const modelName = await discoverGenerateContentModel(geminiApiKey);
-    const geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(modelName)}:generateContent`;
-    const geminiResponse = await fetch(geminiUrl, {
-      method: "POST",
-      headers: { "Content-Type": "application/json", "x-goog-api-key": geminiApiKey },
-      body: JSON.stringify({
-        systemInstruction: { parts: [{ text: systemInstruction(restaurant.name, membership.role) }] },
-        contents,
-        generationConfig: { temperature: 0.2, maxOutputTokens: 700 }
-      })
-    });
+    const geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/${geminiModel}:generateContent`;
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), geminiTimeoutMs);
+    const requestStartedAt = Date.now();
+    console.info("ERP Assistant Gemini request started.", { model: geminiModel, messageCount: contents.length });
+    let geminiResponse: Response;
+    try {
+      geminiResponse = await fetch(geminiUrl, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "x-goog-api-key": geminiApiKey },
+        signal: controller.signal,
+        body: JSON.stringify({
+          systemInstruction: { parts: [{ text: systemInstruction(restaurant.name, membership.role) }] },
+          contents,
+          generationConfig: { temperature: 0.2, maxOutputTokens: 700 }
+        })
+      });
+    } finally {
+      clearTimeout(timeout);
+    }
+    console.info("ERP Assistant Gemini response received.", { status: geminiResponse.status, durationMs: Date.now() - requestStartedAt });
     const result = await readGoogleResponse(geminiResponse);
     if (!geminiResponse.ok) {
       console.error("Gemini API request failed.", {
         status: geminiResponse.status,
         statusText: geminiResponse.statusText,
-        model: modelName,
+        model: geminiModel,
         googleError: sanitizeGoogleError(result)
       });
       return json({ error: "The assistant could not respond right now. Please try again." }, 502);
@@ -187,9 +172,10 @@ serve(async (request) => {
       console.error("Gemini returned no assistant text.");
       return json({ error: "The assistant returned no answer. Please try again." }, 502);
     }
+    console.info("ERP Assistant response returned to frontend.");
     return json({ message: text });
   } catch (error) {
-    console.error("Could not reach Gemini.", errorMessage(error));
+    console.error("Could not reach Gemini.", { message: error instanceof Error && error.name === "AbortError" ? "Gemini request timed out." : errorMessage(error) });
     return json({ error: "The assistant is temporarily unavailable. Please try again." }, 502);
   }
 });

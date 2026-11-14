@@ -1,6 +1,6 @@
 import { supabase, supabaseAnonKey, supabaseUrl } from "./supabaseClient.js";
 
-const maxHistory = 20;
+const maxHistory = 12;
 
 export function initAssistant() {
   const root = document.getElementById("erp-assistant");
@@ -64,9 +64,9 @@ export function initAssistant() {
       while (history.length > maxHistory) history.shift();
       addMessage("assistant", result.message);
     } catch (error) {
-      const message = error.name === "AbortError"
+      const message = error instanceof Error && error.name === "AbortError"
         ? "The assistant took too long to respond. Please try again."
-        : error.message || "The assistant could not respond right now.";
+        : error instanceof Error ? error.message : "The assistant could not respond right now.";
       addMessage("assistant", message, "error");
     } finally {
       window.clearTimeout(timeout);
