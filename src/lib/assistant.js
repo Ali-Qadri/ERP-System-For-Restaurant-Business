@@ -44,7 +44,7 @@ export function initAssistant() {
     input.value = "";
     setLoading(true);
     const controller = new AbortController();
-    const timeout = window.setTimeout(() => controller.abort(), 30000);
+    const timeout = window.setTimeout(() => controller.abort(), 55000);
     try {
       const { data: sessionData, error: sessionError } = await supabase.auth.getSession();
       if (sessionError || !sessionData.session?.access_token) throw new Error("Your session has expired. Please sign in again.");

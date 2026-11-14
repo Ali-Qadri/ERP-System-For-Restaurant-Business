@@ -7,7 +7,7 @@ const maxMessages = 12;
 const maxMessageLength = 2000;
 const maxConversationLength = 12000;
 const maxRequestBodyLength = 14000;
-const geminiTimeoutMs = 20000;
+const geminiTimeoutMs = 45000;
 const corsOrigin = Deno.env.get("APP_URL")?.trim() || "*";
 
 const corsHeaders = {
@@ -18,6 +18,7 @@ const corsHeaders = {
 };
 
 function json(body: Record<string, unknown>, status = 200) {
+  console.info("ERP Assistant HTTP response sent to frontend.", { status });
   return new Response(JSON.stringify(body), {
     status,
     headers: { ...corsHeaders, "Content-Type": "application/json" }
@@ -150,14 +151,19 @@ serve(async (request) => {
         body: JSON.stringify({
           systemInstruction: { parts: [{ text: systemInstruction(restaurant.name, membership.role) }] },
           contents,
-          generationConfig: { temperature: 0.2, maxOutputTokens: 700 }
+        generationConfig: {
+          temperature: 0.4,
+          maxOutputTokens: 512,
+          thinkingConfig: { thinkingLevel: "LOW" }
+        }
         })
       });
     } finally {
       clearTimeout(timeout);
     }
-    console.info("ERP Assistant Gemini response received.", { status: geminiResponse.status, durationMs: Date.now() - requestStartedAt });
+    console.info("ERP Assistant Gemini HTTP response received.", { status: geminiResponse.status, durationMs: Date.now() - requestStartedAt });
     const result = await readGoogleResponse(geminiResponse);
+    console.info("ERP Assistant Gemini response body parsed.", { status: geminiResponse.status });
     if (!geminiResponse.ok) {
       console.error("Gemini API request failed.", {
         status: geminiResponse.status,
@@ -167,11 +173,15 @@ serve(async (request) => {
       });
       return json({ error: "The assistant could not respond right now. Please try again." }, 502);
     }
-    const text = result?.candidates?.[0]?.content?.parts?.map((part: { text?: string }) => part.text || "").join("").trim();
+    const candidateParts = result?.candidates?.[0]?.content?.parts;
+    const text = Array.isArray(candidateParts)
+      ? candidateParts.map((part: { text?: unknown }) => typeof part.text === "string" ? part.text : "").join("").trim()
+      : "";
     if (!text) {
-      console.error("Gemini returned no assistant text.");
-      return json({ error: "The assistant returned no answer. Please try again." }, 502);
+      console.error("Gemini returned no usable assistant text.", { status: geminiResponse.status });
+      return json({ error: "The assistant returned no usable answer. Please try again." }, 502);
     }
+    console.info("ERP Assistant text extracted.", { characterCount: text.length });
     console.info("ERP Assistant response returned to frontend.");
     return json({ message: text });
   } catch (error) {
