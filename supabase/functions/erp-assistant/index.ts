@@ -82,7 +82,7 @@ const toolDeclarations = [
 ].map(([name, description]) => ({
   name,
   description,
-  parameters: { type: "OBJECT", properties: {}, additionalProperties: false }
+  parameters: { type: "OBJECT", properties: {} }
 }));
 
 function unavailableResult(role: string, operation: string) {
