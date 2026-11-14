@@ -906,12 +906,20 @@ export async function startDashboard({ user, profile, membership, restaurant, re
     if (!target) return;
     if (target.dataset.view) {
       event.preventDefault();
+      document.querySelector(".sidebar")?.classList.remove("mobile-open");
+      document.querySelector(".mobile-menu-button")?.setAttribute("aria-expanded", "false");
       closeModal();
       navigateTo(target.dataset.view);
       return;
     }
     const { action, id } = target.dataset;
-    if (action === "close-modal") closeModal();
+    if (action === "toggle-mobile-nav") {
+      const sidebar = document.querySelector(".sidebar");
+      const button = document.querySelector(".mobile-menu-button");
+      const isOpen = sidebar?.classList.toggle("mobile-open");
+      button?.setAttribute("aria-expanded", String(Boolean(isOpen)));
+    }
+    else if (action === "close-modal") closeModal();
     else if (action === "new-order") openNewOrder();
     else if (action === "add-menu") {
       if (authRole === "staff_shared") showToast("Staff accounts can view the menu and add items to orders, but cannot edit menu items.");
