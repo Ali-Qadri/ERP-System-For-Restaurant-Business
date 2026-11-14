@@ -602,37 +602,57 @@ serve(async (request) => {
       const candidate = result?.candidates?.[0];
       const parts = Array.isArray(candidate?.content?.parts) ? candidate.content.parts : [];
       const functionCalls = parts.filter((part: { functionCall?: unknown }) => part.functionCall).map((part: { functionCall: { name?: unknown; args?: unknown } }) => part.functionCall);
+      console.info("ERP Assistant Gemini tool calls detected.", {
+        toolRound: round,
+        maxToolRounds,
+        hasFunctionCalls: functionCalls.length > 0,
+        functionCallCount: functionCalls.length,
+        functionNames: functionCalls.map((functionCall) => typeof functionCall.name === "string" ? functionCall.name : "<invalid>")
+      });
       if (functionCalls.length) {
-        if (round >= maxToolRounds || functionCalls.length > 3) return json({ error: "The assistant could not complete the live data lookup." }, 502);
+        const toolRoundLimitReached = round >= maxToolRounds || functionCalls.length > 3;
+        console.info("ERP Assistant tool-round limit evaluated.", { toolRound: round, maxToolRounds, functionCallCount: functionCalls.length, toolRoundLimitReached });
+        if (toolRoundLimitReached) return json({ error: "The assistant could not complete the live data lookup." }, 502);
         conversation.push(candidate.content);
         for (const functionCall of functionCalls) {
           const operation = typeof functionCall.name === "string" ? functionCall.name : "";
           const args = functionCall.args || {};
-          const isWrite = Boolean(writeRoles[operation]);
-          const invalidArguments = (!operationTables[operation] && !isWrite) || !args || typeof args !== "object" || Array.isArray(args);
-          if (invalidArguments) {
-            conversation.push({ role: "user", parts: [{ functionResponse: { name: operation, response: { result: { status: "error", message: "The requested data operation or arguments are not supported." } } } }] });
-            continue;
-          }
-          if (isWrite) {
-            const prepared = await prepareWrite(userClient, membership.restaurant_id, membership.role, operation, args);
-            if (prepared.status === "pending_confirmation") {
-              const confirmationSecret = Deno.env.get("SUPABASE_JWT_SECRET") || geminiApiKey;
-              const confirmationToken = await signConfirmationPayload({ version: 1, userId: userData.user.id, restaurantId: membership.restaurant_id, role: membership.role, action: operation, data: prepared.data, expiresAt: Date.now() + 10 * 60 * 1000, nonce: crypto.randomUUID() }, confirmationSecret);
-              return json({ message: "Please review this proposed record and choose Confirm or Cancel.", pendingAction: { token: confirmationToken, action: operation, title: prepared.title, fields: prepared.fields, expiresAt: Date.now() + 10 * 60 * 1000 } });
+          console.info("ERP Assistant tool dispatch started.", { toolRound: round, functionName: operation || "<invalid>" });
+          try {
+            const isWrite = Boolean(writeRoles[operation]);
+            const invalidArguments = (!operationTables[operation] && !isWrite) || !args || typeof args !== "object" || Array.isArray(args);
+            if (invalidArguments) {
+              conversation.push({ role: "user", parts: [{ functionResponse: { name: operation, response: { result: { status: "error", message: "The requested data operation or arguments are not supported." } } } }] });
+              console.info("ERP Assistant tool dispatch completed.", { toolRound: round, functionName: operation || "<invalid>", resultStatus: "error" });
+              continue;
             }
-            conversation.push({ role: "user", parts: [{ functionResponse: { name: operation, response: { result: prepared } } }] });
-            continue;
+            if (isWrite) {
+              const prepared = await prepareWrite(userClient, membership.restaurant_id, membership.role, operation, args);
+              if (prepared.status === "pending_confirmation") {
+                const confirmationSecret = Deno.env.get("SUPABASE_JWT_SECRET") || geminiApiKey;
+                const confirmationToken = await signConfirmationPayload({ version: 1, userId: userData.user.id, restaurantId: membership.restaurant_id, role: membership.role, action: operation, data: prepared.data, expiresAt: Date.now() + 10 * 60 * 1000, nonce: crypto.randomUUID() }, confirmationSecret);
+                console.info("ERP Assistant tool dispatch completed.", { toolRound: round, functionName: operation, resultStatus: "pending_confirmation" });
+                return json({ message: "Please review this proposed record and choose Confirm or Cancel.", pendingAction: { token: confirmationToken, action: operation, title: prepared.title, fields: prepared.fields, expiresAt: Date.now() + 10 * 60 * 1000 } });
+              }
+              conversation.push({ role: "user", parts: [{ functionResponse: { name: operation, response: { result: prepared } } }] });
+              console.info("ERP Assistant tool dispatch completed.", { toolRound: round, functionName: operation, resultStatus: prepared.status });
+              continue;
+            }
+            const toolResult = Object.keys(args).length > 0
+              ? { status: "error", message: "This read operation does not accept arguments." }
+              : await readOperation(userClient, membership.restaurant_id, membership.role, operation, timezone);
+            conversation.push({ role: "user", parts: [{ functionResponse: { name: operation, response: { result: toolResult } } }] });
+            console.info("ERP Assistant tool dispatch completed.", { toolRound: round, functionName: operation, resultStatus: toolResult.status });
+          } catch (error) {
+            console.error("ERP Assistant tool dispatch threw an exception.", { toolRound: round, functionName: operation || "<invalid>", errorName: error instanceof Error ? error.name : "UnknownError" });
+            throw error;
           }
-          const toolResult = Object.keys(args).length > 0
-            ? { status: "error", message: "This read operation does not accept arguments." }
-            : await readOperation(userClient, membership.restaurant_id, membership.role, operation, timezone);
-          conversation.push({ role: "user", parts: [{ functionResponse: { name: operation, response: { result: toolResult } } }] });
         }
         continue;
       }
 
       const text = parts.map((part: { text?: unknown }) => typeof part.text === "string" ? part.text : "").join("").trim();
+      console.info("ERP Assistant final text evaluated.", { toolRound: round, hasUsableText: Boolean(text), responsePartCount: parts.length });
       if (!text) {
         console.error("Gemini returned no usable assistant text.", { status: geminiResponse.status });
         return json({ error: "The assistant returned no usable answer. Please try again." }, 502);
