@@ -108,18 +108,30 @@ serve(async (request) => {
   }));
 
   try {
-    const geminiResponse = await fetch("https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent", {
+    const geminiUrl = new URL("https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent");
+    geminiUrl.searchParams.set("key", geminiApiKey);
+    const geminiResponse = await fetch(geminiUrl, {
       method: "POST",
-      headers: { "Content-Type": "application/json", "x-goog-api-key": geminiApiKey },
+      headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        system_instruction: { parts: [{ text: systemInstruction(restaurant.name, membership.role) }] },
+        systemInstruction: { parts: [{ text: systemInstruction(restaurant.name, membership.role) }] },
         contents,
         generationConfig: { temperature: 0.2, maxOutputTokens: 700 }
       })
     });
-    const result = await geminiResponse.json();
+    const responseBody = await geminiResponse.text();
+    let result: Record<string, any> = {};
+    try {
+      result = responseBody ? JSON.parse(responseBody) : {};
+    } catch {
+      result = { raw: responseBody.slice(0, 2000) };
+    }
     if (!geminiResponse.ok) {
-      console.error("Gemini API request failed.", { status: geminiResponse.status, statusText: geminiResponse.statusText });
+      console.error("Gemini API request failed.", {
+        status: geminiResponse.status,
+        statusText: geminiResponse.statusText,
+        googleError: result.error || result.raw || "No error body returned."
+      });
       return json({ error: "The assistant could not respond right now. Please try again." }, 502);
     }
     const text = result?.candidates?.[0]?.content?.parts?.map((part: { text?: string }) => part.text || "").join("").trim();
